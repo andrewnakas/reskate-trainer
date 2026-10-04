@@ -1,5 +1,9 @@
 #include "gui_renderer.h"
 
+#include "Engine/Core/Log/logging.h"
+
+#include <dxgi1_6.h>
+
 #include <backends/imgui_impl_dx12.h>
 #include <wincodec.h>
 
@@ -13,11 +17,52 @@ namespace dingosdk::launcher_gui::detail {
 bool Renderer::init(HWND window) {
     UINT factory_flags = 0;
     ComPtr<IDXGIFactory4> factory;
-    if (FAILED(CreateDXGIFactory2(factory_flags, IID_PPV_ARGS(&factory)))) return false;
-    if (FAILED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device_)))) {
+    if (FAILED(CreateDXGIFactory2(factory_flags, IID_PPV_ARGS(&factory)))) {
+        logging::write(logging::Level::error, logging::Channel::launcher, "Launcher renderer: no DXGI factory.");
+        return false;
+    }
+    bool software = false;
+    // Ask for the best card rather than whichever DXGI lists first. Where
+    // onboard graphics sit beside a real card, the default adapter is usually
+    // the onboard one, and its Direct3D 12 driver can be too old to draw the
+    // window at all while the card that would have worked goes unused.
+    if (ComPtr<IDXGIFactory6> ranked; SUCCEEDED(factory.As(&ranked))) {
+        for (UINT index = 0; !device_; ++index) {
+            ComPtr<IDXGIAdapter1> candidate;
+            if (FAILED(ranked->EnumAdapterByGpuPreference(index, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+                    IID_PPV_ARGS(&candidate)))) break;
+            DXGI_ADAPTER_DESC1 description{};
+            // WARP is the last resort below, not a candidate here.
+            if (FAILED(candidate->GetDesc1(&description)) || (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE))
+                continue;
+            D3D12CreateDevice(candidate.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device_));
+        }
+    }
+    if (!device_ && FAILED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device_)))) {
         ComPtr<IDXGIAdapter> warp;
         if (FAILED(factory->EnumWarpAdapter(IID_PPV_ARGS(&warp))) ||
-            FAILED(D3D12CreateDevice(warp.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device_)))) return false;
+            FAILED(D3D12CreateDevice(warp.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device_)))) {
+            logging::write(logging::Level::error, logging::Channel::launcher,
+                "Launcher renderer: no Direct3D 12 device, not even the software one.");
+            return false;
+        }
+        software = true;
+    }
+    {
+        // Which card drew the window, so a blank one can be told apart from a
+        // driver problem, a software fallback or a remote session.
+        DXGI_ADAPTER_DESC1 description{};
+        ComPtr<IDXGIAdapter1> adapter;
+        if (SUCCEEDED(factory->EnumAdapterByLuid(device_->GetAdapterLuid(), IID_PPV_ARGS(&adapter))) &&
+            SUCCEEDED(adapter->GetDesc1(&description)))
+            logging::write(logging::Level::info, logging::Channel::launcher,
+                std::wstring(L"Launcher renderer: ") + description.Description +
+                (software ? L" (software fallback)" : L"") + L", " +
+                std::to_wstring(description.DedicatedVideoMemory / (1024 * 1024)) + L" MB dedicated");
+        else
+            logging::write(logging::Level::warning, logging::Channel::launcher,
+                software ? "Launcher renderer: software fallback, adapter unidentified."
+                         : "Launcher renderer: adapter unidentified.");
     }
     D3D12_DESCRIPTOR_HEAP_DESC rtv_desc{D3D12_DESCRIPTOR_HEAP_TYPE_RTV, frame_count, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, 1};
     D3D12_DESCRIPTOR_HEAP_DESC srv_desc{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1 + max_textures,
@@ -67,7 +112,22 @@ bool Renderer::init(HWND window) {
     info.SrvDescriptorHeap = srv_heap_.Get();
     info.LegacySingleSrvCpuDescriptor = srv_heap_->GetCPUDescriptorHandleForHeapStart();
     info.LegacySingleSrvGpuDescriptor = srv_heap_->GetGPUDescriptorHandleForHeapStart();
-    return ImGui_ImplDX12_Init(&info);
+    if (!ImGui_ImplDX12_Init(&info)) {
+        logging::write(logging::Level::error, logging::Channel::launcher,
+            "Launcher renderer: the Direct3D 12 backend did not start.");
+        return false;
+    }
+    // The backend builds its pipeline and font texture on the first frame and
+    // ignores whether that worked, so a driver that cannot make one draws
+    // nothing at all and the window shows only its clear colour -- a black
+    // window, with a log that says everything succeeded. Build it here, where
+    // the answer can be acted on.
+    if (!ImGui_ImplDX12_CreateDeviceObjects()) {
+        logging::write(logging::Level::error, logging::Channel::launcher,
+            "Launcher renderer: this driver cannot create the Direct3D 12 pipeline the window draws with.");
+        return false;
+    }
+    return true;
 }
 
 void Renderer::render() {

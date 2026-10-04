@@ -303,6 +303,10 @@ void update_local_customization() noexcept {
         if (!c.catalog_failed && refresh_cosmetic_catalog()) {
             publish_cosmetic_catalog();
             publish_cosmetic_inventory();
+            // Outfits the game asked for before the catalog was ready: it does
+            // not ask again, so they are applied here instead of the player
+            // finding a standard skater that will not save over itself.
+            retry_pending_cosmetic_loads();
         }
     } catch (...) {
         cosmetic_runtime().catalog_failed = true;

@@ -1,12 +1,17 @@
 #include "server_update.h"
 #include "Engine/Core/Platform/launcher_support.h"
+#ifdef _WIN32
 #include "Launcher/updater.h"
 #include <Windows.h>
+#else
+#include <unistd.h>
+#endif
 #include <mutex>
 #include <optional>
 #include <stdexcept>
 
 namespace dingosdk::server {
+#ifdef _WIN32
 namespace {
 std::mutex release_mutex;
 std::optional<launcher_update::Config> release; // from the last check
@@ -81,4 +86,26 @@ void remove_previous_update(const std::filesystem::path &folder) noexcept {
     launcher_update::remove_replaced_files(folder);
     DeleteFileW((folder / L"ReSkateServer-update.zip.new").c_str());
 }
+#else // _WIN32
+
+// Linux V1: self-update is disabled. Operators update by replacing the binary
+// (package manager / re-download). This keeps the server free of WinHTTP and
+// Windows file-replacement semantics. A curl-based updater can be added later.
+bool updates_enabled() noexcept { return false; }
+
+UpdateCheck check_for_update() {
+    UpdateCheck check;
+    check.problem = "self-update is not supported on Linux; update by replacing the binary";
+    return check;
+}
+
+void install_update(const std::filesystem::path &) {
+    throw std::runtime_error("self-update is not supported on Linux");
+}
+
+bool relaunch() { return false; }
+
+void remove_previous_update(const std::filesystem::path &) noexcept {}
+
+#endif // _WIN32
 } // namespace dingosdk::server

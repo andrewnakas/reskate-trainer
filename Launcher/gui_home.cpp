@@ -1,6 +1,7 @@
 #include "gui_internal.h"
 
-#include "mod_manager.h"
+#include "mod_manager.h"
+#include "problem.h"
 
 #include <cmath>
 #include <format>
@@ -118,16 +119,6 @@ void progress_bar(ImDrawList* draw, ImVec2 a, ImVec2 b, float fill, float time) 
     skate_theme::striped_bar(draw, a, b, fill, time, g_scale);
 }
 
-// Brushed page title, tilted like the HUB's.
-void draw_title(ImDrawList* draw, const Fonts& fonts, ImVec2 position, const char* text) {
-    const int start = draw->VtxBuffer.Size;
-    const float size = fonts.title->FontSize;
-    const auto extent = fonts.title->CalcTextSizeA(size, FLT_MAX, 0, text);
-    draw->AddText(fonts.title, size, ImVec2(position.x + S(3), position.y + S(4)), rgba(0, 0, 0, 0.5f), text);
-    draw->AddText(fonts.title, size, position, color::text, text);
-    rotate_since(draw, start, -4.0f, ImVec2(position.x + extent.x * 0.5f, position.y + extent.y * 0.5f));
-}
-
 // Name plate in the top-left corner, like the HUB's player card.
 void draw_plate(ImDrawList* draw, const Fonts& fonts, ImVec2 position, const std::string& title, const std::string& version) {
     const float h = S(46);
@@ -148,21 +139,11 @@ void draw_plate(ImDrawList* draw, const Fonts& fonts, ImVec2 position, const std
     draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(position.x + h + S(12), position.y + S(24)), color::muted, version.c_str());
 }
 
-bool hit(const char* id, ImVec2 position, ImVec2 size, bool enabled, bool& hovered) {
-    ImGui::SetCursorScreenPos(position);
-    ImGui::BeginDisabled(!enabled);
-    const bool pressed = ImGui::InvisibleButton(id, size);
-    hovered = enabled && ImGui::IsItemHovered();
-    ImGui::EndDisabled();
-    if (hovered) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-    return pressed;
-}
-
 // The big action tile: blue like skate.'s selected tile, grey and scribbled when locked.
 bool action_tile(ImDrawList* draw, const Fonts& fonts, ImVec2 position, ImVec2 size, const char* label,
                  const std::string& detail, bool enabled, bool secondary) {
     bool hovered{};
-    const bool pressed = hit("##primary", position, size, enabled, hovered);
+    const bool pressed = tile_hit("##primary", position, size, enabled, hovered);
     const ImVec2 end(position.x + size.x, position.y + size.y);
     const bool blue = enabled && !secondary;
     rough_rect(draw, position, end, blue ? color::blue : enabled ? color::tile : color::tile_grey, 7);
@@ -178,7 +159,7 @@ bool action_tile(ImDrawList* draw, const Fonts& fonts, ImVec2 position, ImVec2 s
 
 bool settings_tile(ImDrawList* draw, const Fonts& fonts, ImVec2 position, ImVec2 size, bool enabled) {
     bool hovered{};
-    const bool pressed = hit("##settings", position, size, enabled, hovered);
+    const bool pressed = tile_hit("##settings", position, size, enabled, hovered);
     const ImVec2 end(position.x + size.x, position.y + size.y);
     rough_rect(draw, position, end, color::tile, 3);
     if (hovered) draw->AddRect(ImVec2(position.x - S(3), position.y - S(3)), ImVec2(end.x + S(3), end.y + S(3)), color::text, 0, 0, S(3));
@@ -198,36 +179,37 @@ bool settings_tile(ImDrawList* draw, const Fonts& fonts, ImVec2 position, ImVec2
     return pressed;
 }
 
-void window_buttons(ImDrawList* draw, HWND window, ImVec2 size) {
-    const ImVec2 button(S(46), S(34));
+// The MODS tile, the biggest after PLAY: a mod browser nobody finds is no use.
+bool mods_tile(ImDrawList* draw, const Fonts& fonts, ImVec2 position, ImVec2 size, bool enabled,
+               const std::string& detail, const std::string& mark, bool bad) {
     bool hovered{};
-    ImVec2 position(size.x - button.x * 2, 0);
-    if (hit("##minimise", position, button, true, hovered)) ShowWindow(window, SW_MINIMIZE);
-    if (hovered) draw->AddRectFilled(position, ImVec2(position.x + button.x, button.y), rgba(255, 255, 255, 0.08f));
-    const ImVec2 middle(position.x + button.x * 0.5f, button.y * 0.5f);
-    draw->AddLine(ImVec2(middle.x - S(5), middle.y), ImVec2(middle.x + S(5), middle.y), color::text, S(1));
-    position.x += button.x;
-    if (hit("##close", position, button, true, hovered)) PostMessageW(window, WM_CLOSE, 0, 0);
-    if (hovered) draw->AddRectFilled(position, ImVec2(position.x + button.x, button.y), rgba(232, 17, 35));
-    const ImVec2 cross(position.x + button.x * 0.5f, button.y * 0.5f);
-    draw->AddLine(ImVec2(cross.x - S(5), cross.y - S(5)), ImVec2(cross.x + S(5), cross.y + S(5)), color::text, S(1));
-    draw->AddLine(ImVec2(cross.x - S(5), cross.y + S(5)), ImVec2(cross.x + S(5), cross.y - S(5)), color::text, S(1));
-}
-
-bool mods_tile(ImDrawList* draw, const Fonts& fonts, ImVec2 position, ImVec2 size, bool enabled, const std::string& detail) {
-    bool hovered{};
-    const bool pressed = hit("##mods", position, size, enabled, hovered);
+    const bool pressed = tile_hit("##mods", position, size, enabled, hovered);
     const ImVec2 end(position.x + size.x, position.y + size.y);
     rough_rect(draw, position, end, color::tile, 4);
     if (hovered) draw->AddRect(ImVec2(position.x - S(3), position.y - S(3)), ImVec2(end.x + S(3), end.y + S(3)), color::text, 0, 0, S(3));
-    const float text_y = position.y + (size.y - fonts.tile->FontSize) * 0.5f - (detail.empty() ? 0 : S(9));
-    draw->AddText(fonts.tile, fonts.tile->FontSize, ImVec2(position.x + S(18), text_y), color::text, "MODS");
-    if (!detail.empty())
-        draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(position.x + S(20), text_y + fonts.tile->FontSize + S(2)),
-            color::muted, detail.c_str());
+    // Title and detail centred as one block, so the tile's height can change.
+    const float block = fonts.tile->FontSize + (detail.empty() ? 0 : fonts.body->FontSize + S(6));
+    const float text_y = position.y + (size.y - block) * 0.5f;
+    draw->AddText(fonts.tile, fonts.tile->FontSize, ImVec2(position.x + S(18), text_y), color::text, "MOD MANAGER");
+    if (!detail.empty()) {
+        const float detail_y = text_y + fonts.tile->FontSize + S(6);
+        float room = end.x - S(86);        // the faded icon owns the rest
+        // A mod that did not load says so in the detail's colour; an update
+        // count is short enough for a pill beside it.
+        if (!mark.empty() && !bad) {
+            room -= badge_width(fonts, mark);
+            badge(draw, fonts,
+                ImVec2(room, detail_y + (fonts.body->FontSize - fonts.caption->FontSize - S(8)) * 0.5f),
+                mark, color::blue, color::ink);
+            room -= S(10);
+        }
+        const ImVec4 clip(position.x + S(20), detail_y, room, detail_y + fonts.body->FontSize + S(2));
+        draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(position.x + S(20), detail_y),
+            bad ? color::danger : color::muted, detail.c_str(), nullptr, 0, &clip);
+    }
     // The skate tool, faded like the wheel on SETTINGS.
-    const ImVec2 centre(end.x - S(44), position.y + size.y * 0.5f);
-    if (tile_icon(draw, g_icon_mods, centre, S(58), hovered)) return pressed;
+    const ImVec2 centre(end.x - S(46), position.y + size.y * 0.5f);
+    if (tile_icon(draw, g_icon_mods, centre, S(56), hovered)) return pressed;
     const ImU32 ink = rgba(255, 255, 255, hovered ? 0.55f : 0.3f);
     for (int layer = 0; layer < 3; ++layer) {
         const float y = centre.y - S(12) + static_cast<float>(layer) * S(12);
@@ -238,59 +220,134 @@ bool mods_tile(ImDrawList* draw, const Fonts& fonts, ImVec2 position, ImVec2 siz
     return pressed;
 }
 
-// The STATUS tile, laid out like the HUB's BOUNTIES tile: a header and icon rows.
-void status_tile(ImDrawList* draw, const Fonts& fonts, const State& state, ImVec2 position, float width, float time) {
-    struct Row { Icon icon; std::string text; std::string detail; };
-    std::vector<Row> rows;
-    Icon now = Icon::busy;
+// The STATUS tile: what ReSkate is doing, or what went wrong and what to do
+// about it. Laid out like the HUB's BOUNTIES tile, with the state in its edge.
+void status_tile(const Fonts& fonts, const State& state, ImVec2 position, float width, float time,
+                 const fs::path& logs, bool modal) {
+    auto* draw = ImGui::GetWindowDrawList();
+    const bool failed = state.phase == Phase::failed;
+    const auto problem = failed ? launcher_problem::explain(state.status) : launcher_problem::Problem{};
+    const std::string headline = failed ? problem.headline : state.status;
+    const std::string detail = failed ? problem.advice : state.detail;
+
+    Icon icon = Icon::busy;
+    ImU32 accent = color::blue;
+    const char* pill = "WORKING";
     switch (state.phase) {
-    case Phase::ready: now = Icon::check; break;
-    case Phase::failed: now = Icon::fail; break;
+    case Phase::ready: icon = Icon::check; accent = color::good; pill = "READY"; break;
+    case Phase::failed: icon = Icon::fail; accent = color::danger; pill = "PROBLEM"; break;
     case Phase::update_available:
     case Phase::game_missing:
-    case Phase::game_outdated: now = Icon::warning; break;
+    case Phase::game_outdated:
+    case Phase::mods_broken: icon = Icon::warning; accent = color::warning; pill = "ACTION NEEDED"; break;
     default: break;
     }
-    rows.push_back({now, state.status, state.detail});
+
+    // The two things worth knowing at a glance, under the rule.
+    struct Fact { Icon icon; std::string text; };
+    std::vector<Fact> facts;
     if (state.config) {
-        const auto build = state.config->game.build_id.empty() ? state.config->game.manifest_id : state.config->game.build_id;
+        const auto build = state.config->game.build_id.empty() ? state.config->game.manifest_id
+                                                               : state.config->game.build_id;
         const bool game_ok = state.phase != Phase::game_missing && state.phase != Phase::game_outdated &&
-                             !(state.phase == Phase::downloading);
-        rows.push_back({game_ok ? Icon::check : Icon::warning, "skate. build " + build, {}});
+                             state.phase != Phase::downloading;
+        facts.push_back({game_ok ? Icon::check : Icon::warning, "skate. build " + build});
         if (update::binary_updates_enabled())
-            rows.push_back({state.phase == Phase::update_available ? Icon::warning : Icon::check,
-                "ReSkate " + state.config->runtime.version, {}});
+            facts.push_back({state.phase == Phase::update_available ? Icon::warning : Icon::check,
+                "ReSkate " + state.config->runtime.version});
     }
-    const float text_x = position.x + S(52), text_width = width - S(72);
-    float height = S(74);
-    for (const auto& row : rows) {
-        height += fonts.bold->CalcTextSizeA(fonts.bold->FontSize, FLT_MAX, text_width, row.text.c_str()).y + S(12);
-        if (!row.detail.empty())
-            height += fonts.body->CalcTextSizeA(fonts.body->FontSize, FLT_MAX, text_width, row.detail.c_str()).y + S(4);
-    }
-    if (state.progress >= 0) height += S(28);
+
+    const float pad = S(20), gutter = S(28);
+    const float text_x = position.x + pad + gutter;
+    const float text_width = width - pad * 2 - gutter;
+    const auto headline_size = fonts.heading->CalcTextSizeA(fonts.heading->FontSize, FLT_MAX, text_width, headline.c_str());
+    const auto detail_size = detail.empty() ? ImVec2(0, 0)
+        : fonts.body->CalcTextSizeA(fonts.body->FontSize, FLT_MAX, text_width, detail.c_str());
+
+    float height = S(64) + headline_size.y;
+    if (!detail.empty()) height += S(8) + detail_size.y;
+    if (failed) height += S(12) + S(30);
+    if (state.progress >= 0) height += S(22);
+    if (!facts.empty()) height += S(18) + static_cast<float>(facts.size()) * (fonts.body->FontSize + S(12));
+    height += facts.empty() ? S(20) : S(8);
+
     const ImVec2 end(position.x + width, position.y + height);
     rough_rect(draw, position, end, color::tile, 5);
-    draw->AddText(fonts.tile, fonts.tile->FontSize, ImVec2(position.x + S(18), position.y + S(16)), color::text, "STATUS");
-    float y = position.y + S(66);
-    for (const auto& row : rows) {
-        skate_theme::status_icon(draw, ImVec2(position.x + S(30), y + fonts.bold->FontSize * 0.5f), row.icon, time, g_scale);
-        const auto text = fonts.bold->CalcTextSizeA(fonts.bold->FontSize, FLT_MAX, text_width, row.text.c_str());
-        draw->AddText(fonts.bold, fonts.bold->FontSize, ImVec2(text_x, y),
-            row.icon == Icon::fail ? color::danger : color::text, row.text.c_str(), nullptr, text_width);
-        y += text.y + S(4);
-        if (!row.detail.empty()) {
-            const auto detail = fonts.body->CalcTextSizeA(fonts.body->FontSize, FLT_MAX, text_width, row.detail.c_str());
-            draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(text_x, y), color::muted, row.detail.c_str(), nullptr, text_width);
-            y += detail.y + S(4);
-        }
+    // The state is readable before a word of it is: a coloured edge and a pill.
+    draw->AddRectFilled(position, ImVec2(position.x + S(4), end.y), accent);
+    draw->AddText(fonts.tile, fonts.tile->FontSize, ImVec2(position.x + pad, position.y + S(14)), color::text, "STATUS");
+    badge(draw, fonts, ImVec2(end.x - pad - badge_width(fonts, pill),
+        position.y + S(14) + (fonts.tile->FontSize - fonts.caption->FontSize - S(8)) * 0.5f), pill, accent, color::ink);
+
+    float y = position.y + S(64);
+    skate_theme::status_icon(draw, ImVec2(position.x + pad + S(10), y + fonts.heading->FontSize * 0.5f), icon, time, g_scale);
+    draw->AddText(fonts.heading, fonts.heading->FontSize, ImVec2(text_x, y), failed ? color::danger : color::text,
+        headline.c_str(), nullptr, text_width);
+    y += headline_size.y;
+    if (!detail.empty()) {
         y += S(8);
+        draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(text_x, y), color::muted, detail.c_str(), nullptr,
+            text_width);
+        y += detail_size.y;
     }
-    if (state.progress >= 0)
-        progress_bar(draw, ImVec2(position.x + S(20), y + S(4)), ImVec2(end.x - S(20), y + S(16)), state.progress, time);
+    if (failed) {
+        y += S(12);
+        ImGui::BeginDisabled(modal);
+        ImGui::SetCursorScreenPos(ImVec2(text_x, y));
+        if (ImGui::Button("Open logs", ImVec2(S(104), S(30)))) open_path(logs);
+        ImGui::SameLine(0, S(8));
+        if (ImGui::Button("Copy details", ImVec2(S(116), S(30)))) {
+            // The raw message, not the friendly one: this is for the Discord.
+            std::string report = "ReSkate launcher\n" + state.status + "\n";
+            for (const auto& fact : facts) report += fact.text + "\n";
+            ImGui::SetClipboardText(report.c_str());
+        }
+        ImGui::EndDisabled();
+        y += S(30);
+    }
+    if (state.progress >= 0) {
+        progress_bar(draw, ImVec2(position.x + pad, y + S(6)), ImVec2(end.x - pad, y + S(18)), state.progress, time);
+        y += S(22);
+    }
+    if (!facts.empty()) {
+        y += S(10);
+        draw->AddLine(ImVec2(position.x + pad, y), ImVec2(end.x - pad, y), rgba(255, 255, 255, 0.09f), S(1));
+        y += S(8);
+        for (const auto& fact : facts) {
+            skate_theme::status_icon(draw, ImVec2(position.x + pad + S(10), y + fonts.body->FontSize * 0.5f),
+                fact.icon, time, g_scale);
+            draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(text_x, y), color::muted, fact.text.c_str());
+            y += fonts.body->FontSize + S(12);
+        }
+    }
 }
 
 } // namespace
+
+void page_title(ImDrawList* draw, const Fonts& fonts, ImVec2 position, const char* text, float wanted) {
+    const int start = draw->VtxBuffer.Size;
+    const float size = wanted > 0 ? wanted : fonts.title->FontSize;
+    const auto extent = fonts.title->CalcTextSizeA(size, FLT_MAX, 0, text);
+    draw->AddText(fonts.title, size, ImVec2(position.x + S(3), position.y + S(4)), rgba(0, 0, 0, 0.5f), text);
+    draw->AddText(fonts.title, size, position, color::text, text);
+    skate_theme::rotate_since(draw, start, -4.0f, ImVec2(position.x + extent.x * 0.5f, position.y + extent.y * 0.5f));
+}
+
+void window_buttons(ImDrawList* draw, HWND window, ImVec2 size) {
+    const ImVec2 button(S(46), S(34));
+    bool hovered{};
+    ImVec2 position(size.x - button.x * 2, 0);
+    if (tile_hit("##minimise", position, button, true, hovered)) ShowWindow(window, SW_MINIMIZE);
+    if (hovered) draw->AddRectFilled(position, ImVec2(position.x + button.x, button.y), rgba(255, 255, 255, 0.08f));
+    const ImVec2 middle(position.x + button.x * 0.5f, button.y * 0.5f);
+    draw->AddLine(ImVec2(middle.x - S(5), middle.y), ImVec2(middle.x + S(5), middle.y), color::text, S(1));
+    position.x += button.x;
+    if (tile_hit("##close", position, button, true, hovered)) PostMessageW(window, WM_CLOSE, 0, 0);
+    if (hovered) draw->AddRectFilled(position, ImVec2(position.x + button.x, button.y), rgba(232, 17, 35));
+    const ImVec2 cross(position.x + button.x * 0.5f, button.y * 0.5f);
+    draw->AddLine(ImVec2(cross.x - S(5), cross.y - S(5)), ImVec2(cross.x + S(5), cross.y + S(5)), color::text, S(1));
+    draw->AddLine(ImVec2(cross.x - S(5), cross.y + S(5)), ImVec2(cross.x + S(5), cross.y - S(5)), color::text, S(1));
+}
 
 void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPanel& mods_panel) {
     const auto& io = ImGui::GetIO();
@@ -324,7 +381,7 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
         }
     }
     const bool modal = ui.settings || ui.mods || ui.sign_in || qr_open || state.prompt.has_value() ||
-        ui.steam_offline;
+        ui.steam_offline || state.phase == Phase::mods_broken;
 
     ImGui::SetNextWindowPos(ImVec2(0, 0));
     ImGui::SetNextWindowSize(size);
@@ -342,31 +399,35 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
         version = "Launcher " + state.config->launcher.version;
     const bool greet = !launcher.settings().offline && !ui.steam_name.empty();
     draw_plate(draw, fonts, ImVec2(S(50), S(40)), greet ? "Welcome, " + ui.steam_name : std::string("ReSkate"), version);
-    draw_title(draw, fonts, ImVec2(S(52), S(88)), "RESKATE");
+    page_title(draw, fonts, ImVec2(S(52), S(88)), "RESKATE");
 
     window_buttons(draw, window, size);
 
     ImGui::BeginDisabled(modal);
-    const float column = S(340);
-    const ImVec2 primary_size(column, S(150));
-    const ImVec2 primary(size.x - S(60) - column, size.y - S(50) - primary_size.y);
-    const ImVec2 settings(primary.x, primary.y - S(14) - S(84));
-    const ImVec2 mods_position(primary.x, settings.y - S(14) - S(84));
+    const float column = S(360);
+    const ImVec2 primary_size(column, S(160));
+    const ImVec2 primary(size.x - S(64) - column, size.y - S(56) - primary_size.y);
+    // MODS sits directly under PLAY, where the eye already is, and is taller
+    // than SETTINGS so it reads as a place to go rather than a toggle.
+    const ImVec2 mods_size(column, S(116));
+    const ImVec2 mods_position(primary.x, primary.y - S(14) - mods_size.y);
+    const ImVec2 settings(primary.x, mods_position.y - S(14) - S(84));
     const char* label = "PLAY";
     std::string detail;
     bool enabled = !launcher.busy();
     bool secondary = false;
-    const auto build = state.config && !state.config->game.build_id.empty() ? state.config->game.build_id : std::string();
     switch (state.phase) {
     case Phase::checking: label = "CHECKING"; enabled = false; break;
     case Phase::update_available: label = "UPDATE"; detail = "New ReSkate files are ready"; break;
     case Phase::updating: label = "UPDATING"; enabled = false; break;
     case Phase::game_missing: label = "INSTALL"; detail = "Download skate. from Steam"; break;
-    case Phase::game_outdated: label = "DOWNLOAD"; detail = "Get skate. build " + build; break;
+    case Phase::game_outdated: label = "DOWNLOAD"; detail = "Get the supported build from Steam"; break;
     case Phase::downloading:
         label = "CANCEL"; enabled = true; secondary = true;
         detail = state.progress >= 0 ? std::format("Downloading  {:.0f}%", state.progress * 100) : "Downloading";
         break;
+    case Phase::merging: label = "MODS"; enabled = false; detail = "Merging your mods before Skate starts"; break;
+    case Phase::mods_broken: label = "PLAY"; enabled = false; detail = "Waiting on an answer about your mods"; break;
     case Phase::ready:
         label = "PLAY";
         // Release builds install the configured runtime before PLAY appears.
@@ -398,13 +459,25 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
             ++installed;
             if (entry.enabled) ++enabled_mods;
         }
+        // A mod the game threw out of the merge is named here, so nobody has
+        // to wonder which one stopped working.
+        std::vector<std::string> dropped;
+        for (const auto& entry : list.entries)
+            if (entry.enabled && (list.excluded.contains(entry.mod.name) || !entry.mod.outdated.empty()))
+                dropped.push_back(entry.mod.title);
         const auto pending = updates(mods_panel.store, installed_versions(list)).size();
-        ui.mods_detail = pending ? (pending == 1 ? std::string("1 update available") : std::format("{} updates available", pending))
+        ui.mods_mark_bad = !dropped.empty();
+        ui.mods_mark = !dropped.empty() ? std::string("NOT LOADED")
+                     : pending == 1 ? std::string("1 UPDATE")
+                     : pending ? std::format("{} UPDATES", pending)
+                     : std::string();
+        ui.mods_detail = dropped.size() == 1 ? dropped.front() + " did not load"
+                       : !dropped.empty() ? std::format("{} mods did not load", dropped.size())
                        : installed ? std::format("{} of {} enabled", enabled_mods, installed)
-                       : std::string("Install and browse mods");
+                       : std::string("Browse and install from Thunderstore");
         ui.mods_checked = time;
     }
-    if (mods_tile(draw, fonts, mods_position, ImVec2(column, S(84)), !modal, ui.mods_detail)) {
+    if (mods_tile(draw, fonts, mods_position, mods_size, !modal, ui.mods_detail, ui.mods_mark, ui.mods_mark_bad)) {
         ui.mods = true;
         mods_panel.scanned = false;
     }
@@ -413,7 +486,7 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
         (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false))) act();
     ImGui::EndDisabled();
 
-    status_tile(draw, fonts, state, ImVec2(S(60), S(200)), S(360), time);
+    status_tile(fonts, state, ImVec2(S(60), S(200)), S(430), time, launcher.session().paths.logs, modal);
 
     if (modal) draw->AddRectFilled(ImVec2(0, 0), size, rgba(4, 6, 9, 0.72f));
     g_drag_allowed = !modal && !ImGui::IsAnyItemHovered();
@@ -422,8 +495,10 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
     if (state.prompt) prompt_window(launcher, fonts, size, *state.prompt, ui);
     else if (qr_open) qr_window(launcher, fonts, size, state.qr);
     else if (ui.sign_in) sign_in_window(launcher, fonts, size, ui);
-    else if (ui.settings) settings_window(launcher, fonts, size, ui);
+    else if (ui.settings) settings_window(launcher, fonts, size, ui, window);
     else if (ui.mods) mods_window(launcher, fonts, size, ui, mods_panel, window);
+    else if (state.phase == Phase::mods_broken)
+        mods_broken_window(launcher, fonts, size, ui, mods_panel, state.mod_problems);
     else if (ui.steam_offline) steam_offline_window(fonts, size, ui);
 }
 

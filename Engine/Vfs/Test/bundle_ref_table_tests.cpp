@@ -1,9 +1,11 @@
 // Merges the game's character bundle-reference table with a cosmetic mod's
-// copy of it. Arguments: <Skate folder> <cosmetic mod folder>; skipped when
-// either is missing.
+// copy of it. Arguments: <Skate folder> <cosmetic mod folder> [<another
+// cosmetic mod folder>]; skipped when either of the first two is missing.
 #include "Engine/Vfs/mod_merge_internal.h"
 #include "Engine/Resource/bundle_ref_table.h"
 #include "Engine/Resource/cas_codec.h"
+#include <algorithm>
+#include <array>
 #include <iostream>
 #include <stdexcept>
 
@@ -58,6 +60,25 @@ int main(int argc, char** argv) {
         check(again.added == 0, "the merged table already holds every preset");
         std::cout << "base " << base.bytes.size() << " bytes, mod " << copy.bytes.size() << " bytes, merged "
                   << once.resource.size() << " bytes; " << once.added << " preset(s) added.\n";
+        if (argc > 3 && fs::exists(fs::path(argv[3]) / L"Win32" / L"items.toc")) {
+            // Mods number their presets alike (cust_tops/1_ap, cust_bottoms/1_ap), so two
+            // mods can share leaf names. Every preset of both still has to go in.
+            const auto other = read_table(store, argv[3], base_root, game_root);
+            const fb::bundle_ref::Table other_table{other.bytes, other.meta};
+            const auto alone = fb::bundle_ref::merge(base_table, std::span(&other_table, 1));
+            const std::array both_tables{mod_table, other_table}, reversed_tables{other_table, mod_table};
+            const auto both = fb::bundle_ref::merge(base_table, both_tables);
+            const auto reversed = fb::bundle_ref::merge(base_table, reversed_tables);
+            check(both.added >= std::max(once.added, alone.added) && both.added <= once.added + alone.added,
+                  "two mods' presets are all added");
+            check(reversed.added == both.added && reversed.shadowed.size() == both.shadowed.size(),
+                  "the order of the mods changes which preset keeps a shared leaf name, not what is added");
+            for (const auto& clash : both.shadowed)
+                check(clash.edit == 1 && !clash.path.empty() && !clash.holder.empty() && clash.path != clash.holder,
+                      "a shared leaf name is reported with the preset that holds it");
+            std::cout << "two mods: " << both.added << " preset(s) added, " << both.shadowed.size()
+                      << " under their full path only.\n";
+        }
     } catch (const std::exception& error) {
         std::cerr << "FAILED: " << error.what() << "\n";
         return 1;

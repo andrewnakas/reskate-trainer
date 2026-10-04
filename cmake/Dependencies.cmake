@@ -1,28 +1,30 @@
-add_library(dingosdk_imgui STATIC
-    "${PROJECT_SOURCE_DIR}/External/imgui/imgui.cpp"
-    "${PROJECT_SOURCE_DIR}/External/imgui/imgui_draw.cpp"
-    "${PROJECT_SOURCE_DIR}/External/imgui/imgui_tables.cpp"
-    "${PROJECT_SOURCE_DIR}/External/imgui/imgui_widgets.cpp"
-    "${PROJECT_SOURCE_DIR}/External/imgui/backends/imgui_impl_dx12.cpp"
-    "${PROJECT_SOURCE_DIR}/External/imgui/backends/imgui_impl_win32.cpp")
-target_include_directories(dingosdk_imgui PUBLIC "${PROJECT_SOURCE_DIR}/External/imgui")
-target_compile_definitions(dingosdk_imgui PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
-target_link_libraries(dingosdk_imgui PUBLIC d3d12 dxgi d3dcompiler dwmapi)
+if(WIN32)
+    add_library(dingosdk_imgui STATIC
+        "${PROJECT_SOURCE_DIR}/External/imgui/imgui.cpp"
+        "${PROJECT_SOURCE_DIR}/External/imgui/imgui_draw.cpp"
+        "${PROJECT_SOURCE_DIR}/External/imgui/imgui_tables.cpp"
+        "${PROJECT_SOURCE_DIR}/External/imgui/imgui_widgets.cpp"
+        "${PROJECT_SOURCE_DIR}/External/imgui/backends/imgui_impl_dx12.cpp"
+        "${PROJECT_SOURCE_DIR}/External/imgui/backends/imgui_impl_win32.cpp")
+    target_include_directories(dingosdk_imgui PUBLIC "${PROJECT_SOURCE_DIR}/External/imgui")
+    target_compile_definitions(dingosdk_imgui PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+    target_link_libraries(dingosdk_imgui PUBLIC d3d12 dxgi d3dcompiler dwmapi)
 
-add_library(dingosdk_detours STATIC
-    External/detours/src/detours.cpp
-    External/detours/src/modules.cpp
-    External/detours/src/disasm.cpp
-    External/detours/src/image.cpp
-    External/detours/src/creatwth.cpp
-    External/detours/src/disolx86.cpp
-    External/detours/src/disolx64.cpp
-    External/detours/src/disolia64.cpp
-    External/detours/src/disolarm.cpp
-    External/detours/src/disolarm64.cpp)
-target_include_directories(dingosdk_detours SYSTEM PUBLIC External/detours/src)
-target_compile_definitions(dingosdk_detours PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-set_target_properties(dingosdk_imgui dingosdk_detours PROPERTIES FOLDER "Dependencies")
+    add_library(dingosdk_detours STATIC
+        External/detours/src/detours.cpp
+        External/detours/src/modules.cpp
+        External/detours/src/disasm.cpp
+        External/detours/src/image.cpp
+        External/detours/src/creatwth.cpp
+        External/detours/src/disolx86.cpp
+        External/detours/src/disolx64.cpp
+        External/detours/src/disolia64.cpp
+        External/detours/src/disolarm.cpp
+        External/detours/src/disolarm64.cpp)
+    target_include_directories(dingosdk_detours SYSTEM PUBLIC External/detours/src)
+    target_compile_definitions(dingosdk_detours PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    set_target_properties(dingosdk_imgui dingosdk_detours PROPERTIES FOLDER "Dependencies")
+endif()
 
 enable_language(C)
 add_library(dingosdk_miniz STATIC External/miniz/miniz.c)

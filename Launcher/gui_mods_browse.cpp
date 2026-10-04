@@ -232,17 +232,6 @@ std::vector<const ts::Package*> visible_packages(const Store& store, const ts::I
 
 constexpr std::array<const char*, 5> sort_names{"Last updated", "Most downloaded", "Newest", "Top rated", "Name"};
 
-void draw_icon(ModsPanel& panel, const ts::Package& package, float size) {
-    const ImVec2 start = ImGui::GetCursorScreenPos();
-    const ImVec2 end(start.x + size, start.y + size);
-    auto* draw = ImGui::GetWindowDrawList();
-    if (const auto id = package_icon(panel, package))
-        draw->AddImageRounded(id, start, end, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, S(4));
-    else
-        draw->AddRectFilled(start, end, rgba(255, 255, 255, 0.06f), S(4));
-    ImGui::Dummy(ImVec2(size, size));
-}
-
 // What installing `package` does now: install, update or reinstall.
 std::string action_label(const ts::Package& package, const ts::Installed& installed) {
     const auto found = installed.find(ts::folder_for(package.full_name));
@@ -252,6 +241,16 @@ std::string action_label(const ts::Package& package, const ts::Installed& instal
 }
 
 } // namespace
+
+// Placed by hand: a row lays its own icon, text and badges out.
+void mod_icon(ModsPanel& panel, const thunderstore::Package* package, ImVec2 position, float size) {
+    const ImVec2 end(position.x + size, position.y + size);
+    auto* draw = ImGui::GetWindowDrawList();
+    if (const auto id = package ? package_icon(panel, *package) : ImTextureID{})
+        draw->AddImageRounded(id, position, end, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, S(4));
+    else
+        draw->AddRectFilled(position, end, rgba(255, 255, 255, 0.06f), S(4));
+}
 
 void refresh_listing(ModsPanel& panel, double time, bool force) {
     auto& store = panel.store;
@@ -400,14 +399,25 @@ void pump_icons(ModsPanel& panel) {
     }
 }
 
-void browse_page(const Fonts& fonts, ModsPanel& panel, float height, bool installing) {
+bool picked(const Store& store, const std::string& full_name) {
+    return std::find(store.picked.begin(), store.picked.end(), full_name) != store.picked.end();
+}
+
+void pick(Store& store, const std::string& full_name, bool on) {
+    const auto found = std::find(store.picked.begin(), store.picked.end(), full_name);
+    if (on && found == store.picked.end()) store.picked.push_back(full_name);
+    else if (!on && found != store.picked.end()) store.picked.erase(found);
+}
+
+void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float height, bool installing) {
     auto& store = panel.store;
     const auto installed = installed_versions(panel.list);
-    pump_icons(panel);
 
-    // ------------------------------------------------ filters
+    // ------------------------------------------------ search, category, sort, refresh
     const float top = ImGui::GetCursorPosY();
-    ImGui::SetNextItemWidth(S(300));
+    const float combo = S(190), refresh = S(110);
+    ImGui::SetNextItemWidth(std::max(S(140),
+        ImGui::GetContentRegionAvail().x - (combo + S(10)) * 2 - refresh - S(10)));
     ImGui::InputTextWithHint("##search", "Search mods", store.search.data(), store.search.size());
     ImGui::SameLine();
     std::vector<std::string> categories;
@@ -415,7 +425,7 @@ void browse_page(const Fonts& fonts, ModsPanel& panel, float height, bool instal
         for (const auto& category : package.categories)
             if (std::find(categories.begin(), categories.end(), category) == categories.end()) categories.push_back(category);
     std::sort(categories.begin(), categories.end());
-    ImGui::SetNextItemWidth(S(170));
+    ImGui::SetNextItemWidth(combo);
     if (ImGui::BeginCombo("##category", store.category.empty() ? "All categories" : store.category.c_str())) {
         if (ImGui::Selectable("All categories", store.category.empty())) store.category.clear();
         for (const auto& category : categories)
@@ -423,163 +433,250 @@ void browse_page(const Fonts& fonts, ModsPanel& panel, float height, bool instal
         ImGui::EndCombo();
     }
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(S(170));
+    ImGui::SetNextItemWidth(combo);
     if (ImGui::BeginCombo("##sort", sort_names[static_cast<std::size_t>(std::clamp(store.sort, 0, 4))])) {
         for (int i = 0; i < static_cast<int>(sort_names.size()); ++i)
             if (ImGui::Selectable(sort_names[static_cast<std::size_t>(i)], store.sort == i)) store.sort = i;
         ImGui::EndCombo();
     }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(store.loading);
+    if (ImGui::Button("Refresh", ImVec2(refresh, 0))) refresh_mods(launcher, panel);
+    ImGui::EndDisabled();
+
+    // ------------------------------------------------ what is ticked
+    if (!store.picked.empty()) {
+        ImGui::Spacing();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(store.picked.size() == 1
+            ? "1 mod selected" : std::format("{} mods selected", store.picked.size()).c_str());
+        ImGui::SameLine();
+        const float action = S(190);
+        ImGui::SetCursorPosX(ImGui::GetContentRegionMax().x - action - S(90) - S(8));
+        if (ImGui::Button("Clear", ImVec2(S(90), 0))) store.picked.clear();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(installing);
+        push_primary_button();
+        if (ImGui::Button(store.picked.size() == 1 ? "INSTALL 1 MOD"
+                : std::format("INSTALL {} MODS", store.picked.size()).c_str(), ImVec2(action, 0))) {
+            std::vector<ts::Package> chosen;
+            for (const auto& name : store.picked)
+                for (const auto& package : store.packages)
+                    if (package.full_name == name) chosen.push_back(package);
+            store.picked.clear();
+            start_store_install(panel, std::move(chosen));
+        }
+        pop_primary_button();
+        ImGui::EndDisabled();
+    }
     ImGui::Spacing();
     const float body = std::max(S(120), height - (ImGui::GetCursorPosY() - top));
-    const float list_width = (ImGui::GetContentRegionAvail().x - S(16)) * 0.58f;
     const auto packages = visible_packages(store, installed);
 
-    // ------------------------------------------------ list
-    ImGui::BeginChild("##store_list", ImVec2(list_width, body), ImGuiChildFlags_Borders);
-    const auto centred = [](const char* text) {
+    // ------------------------------------------------ the list
+    ImGui::BeginChild("##store_list", ImVec2(0, body), ImGuiChildFlags_Borders);
+    const auto note = [](const char* text) {
         ImGui::Spacing();
+        ImGui::Indent(S(14));
         ImGui::PushTextWrapPos(0);
         ImGui::TextDisabled("%s", text);
         ImGui::PopTextWrapPos();
+        ImGui::Unindent(S(14));
     };
     if (!store.loaded) {
-        if (store.loading || store.error.empty()) centred("Loading mods from Thunderstore...");
+        if (store.loading || store.error.empty()) note("Loading mods from Thunderstore...");
         else {
             ImGui::Spacing();
+            ImGui::Indent(S(14));
             ImGui::PushTextWrapPos(0);
             ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::danger), "Thunderstore could not be reached: %s",
                 store.error.c_str());
             ImGui::PopTextWrapPos();
             if (ImGui::Button("Try again")) refresh_listing(panel, ImGui::GetTime(), true);
+            ImGui::Unindent(S(14));
         }
     } else if (store.packages.empty()) {
-        centred("No mods on Thunderstore yet. Made one? Package it with a manifest.json, icon.png and README.md "
-                "and upload it to thunderstore.io/c/reskate.");
+        note("No mods on Thunderstore yet. Made one? Package it with a manifest.json, icon.png and README.md "
+             "and upload it to thunderstore.io/c/reskate.");
     } else if (packages.empty()) {
-        centred("No mods match your search.");
+        note("No mods match your search.");
     }
-    const float row = S(68);
-    ImGuiListClipper clipper;
-    clipper.Begin(static_cast<int>(packages.size()), row + ImGui::GetStyle().ItemSpacing.y);
-    while (clipper.Step()) {
-        for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
-            const auto& package = *packages[static_cast<std::size_t>(i)];
-            ImGui::PushID(package.full_name.c_str());
-            const auto start = ImGui::GetCursorPos();
-            if (ImGui::Selectable("##row", store.selected == package.full_name, ImGuiSelectableFlags_AllowOverlap,
-                    ImVec2(0, row)))
-                store.selected = package.full_name;
-            const float right = ImGui::GetWindowContentRegionMax().x;
-            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(S(8), S(3)));
-            ImGui::SetCursorPos(ImVec2(start.x + S(6), start.y + S(10)));
-            draw_icon(panel, package, S(48));
-            const float text_x = start.x + S(66);
-            ImGui::SetCursorPos(ImVec2(text_x, start.y + S(7)));
-            ImGui::PushFont(fonts.bold);
-            ImGui::TextUnformatted(package.title().c_str());
-            ImGui::PopFont();
-            ImGui::SameLine();
-            ImGui::TextDisabled("by %s", package.owner.c_str());
-            const auto found = installed.find(ts::folder_for(package.full_name));
-            const char* badge = found == installed.end() ? nullptr
-                : ts::update_available(package, installed) ? "UPDATE" : "INSTALLED";
-            if (badge) {
-                const float width = ImGui::CalcTextSize(badge).x;
-                ImGui::SameLine(right - width - S(6));
-                ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(std::string_view(badge) == "UPDATE" ? color::blue : color::good),
-                    "%s", badge);
-            }
-            ImGui::SetCursorPosX(text_x);
-            auto line = package.latest().description;
-            std::replace_if(line.begin(), line.end(), [](char ch) { return ch == '\n' || ch == '\r' || ch == '\t'; }, ' ');
-            ImGui::PushClipRect(ImGui::GetCursorScreenPos(),
-                ImVec2(ImGui::GetWindowPos().x + right - S(6), ImGui::GetCursorScreenPos().y + row), true);
-            ImGui::TextUnformatted(line.c_str());
-            ImGui::PopClipRect();
-            ImGui::SetCursorPosX(text_x);
-            ImGui::TextDisabled("v%s  /  %s downloads  /  %s", package.latest().number.c_str(),
-                count_text(package.downloads).c_str(), date_text(package.date_updated).c_str());
-            ImGui::PopStyleVar();
-            // An item at the row's end, so the cursor never extends the list on its own.
-            ImGui::SetCursorPos(ImVec2(start.x, start.y + row));
-            ImGui::Dummy(ImVec2(1, 0));
-            ImGui::PopID();
-        }
-    }
-    ImGui::EndChild();
 
-    // ------------------------------------------------ details
-    ImGui::SameLine(0, S(16));
-    ImGui::BeginChild("##store_details", ImVec2(0, body), ImGuiChildFlags_Borders);
+    const float row = S(78);
+    ImGui::BeginDisabled(installing);
+    virtual_rows(static_cast<int>(packages.size()), [&](int) { return row; }, [&](int index, float tall) {
+        const auto& package = *packages[static_cast<std::size_t>(index)];
+        const auto& version = package.latest();
+        const auto found = installed.find(ts::folder_for(package.full_name));
+        const bool update = ts::update_available(package, installed);
+        // Tools (Blender add-ons, utilities) are not game mods: their page has the download.
+        const bool tool = package.in_category("Tools") && !package.in_category("Mods");
+        bool ticked = picked(store, package.full_name);
+
+        ImGui::PushID(package.full_name.c_str());
+        auto* draw = ImGui::GetWindowDrawList();
+        const ImVec2 start = ImGui::GetCursorScreenPos();
+        const float width = ImGui::GetContentRegionAvail().x;
+        // The row itself opens the overview; the widgets on it keep their clicks.
+        if (list_row("##row", width, tall, ticked)) {
+            store.selected = package.full_name;
+            store.overview = false;
+        }
+        const float right = start.x + width;
+        const float text_x = start.x + S(82);
+        mod_icon(panel, &package, ImVec2(start.x + S(14), start.y + S(11)), S(56));
+        draw->AddText(fonts.bold, fonts.bold->FontSize, ImVec2(text_x, start.y + S(10)), color::text,
+            package.title().c_str());
+        const float title_width =
+            fonts.bold->CalcTextSizeA(fonts.bold->FontSize, FLT_MAX, 0, package.title().c_str()).x;
+        draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(text_x + title_width + S(8), start.y + S(12)),
+            color::muted, ("by " + package.owner).c_str());
+
+        // ------------------------------------------- tick and install, at the right
+        const float box = ImGui::GetFrameHeight();
+        const float tick_x = right - S(16) - box;
+        const float button = S(118);
+        const float button_x = tick_x - S(12) - button;
+        ImGui::SetCursorScreenPos(ImVec2(tick_x, start.y + (tall - box) * 0.5f));
+        ImGui::BeginDisabled(tool);
+        if (ImGui::Checkbox("##pick", &ticked)) pick(store, package.full_name, ticked);
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(tool ? "A tool, not a game mod: get it from its Thunderstore page."
+                                   : "Tick to install this with the others you tick");
+        ImGui::SetCursorScreenPos(ImVec2(button_x, start.y + (tall - S(32)) * 0.5f));
+        if (tool) {
+            if (ImGui::Button("THUNDERSTORE", ImVec2(button, S(32)))) open_url(package.package_url);
+        } else if (update) {
+            push_primary_button();
+            if (ImGui::Button("UPDATE", ImVec2(button, S(32)))) start_store_install(panel, {package});
+            pop_primary_button();
+        } else if (found == installed.end()) {
+            push_primary_button();
+            if (ImGui::Button("INSTALL", ImVec2(button, S(32)))) start_store_install(panel, {package});
+            pop_primary_button();
+        } else {
+            const auto mark = "INSTALLED";
+            badge(draw, fonts, ImVec2(button_x + button - badge_width(fonts, mark),
+                start.y + (tall - fonts.caption->FontSize - S(8)) * 0.5f), mark, color::good, color::ink);
+        }
+
+        auto line = version.description;
+        std::replace_if(line.begin(), line.end(),
+            [](char ch) { return ch == 0x0a || ch == 0x0d || ch == 0x09; }, ' ');
+        // One line, clipped rather than wrapped, so every row is the same height.
+        const ImVec4 clip(text_x, start.y, button_x - S(14), start.y + tall);
+        draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(text_x, start.y + S(32)), color::text, line.c_str(),
+            nullptr, 0, &clip);
+        draw->AddText(fonts.caption, fonts.caption->FontSize, ImVec2(text_x, start.y + S(55)), color::muted,
+            std::format("v{}  /  {} downloads  /  {}", version.number, count_text(package.downloads),
+                date_text(package.date_updated)).c_str());
+        ImGui::PopID();
+    });
+    ImGui::EndDisabled();
+    ImGui::EndChild();
+}
+
+void package_overview(const Fonts& fonts, ModsPanel& panel, ImVec2 size, bool installing) {
+    auto& store = panel.store;
+    if (store.selected.empty()) return;
     const ts::Package* selected = nullptr;
     for (const auto& package : store.packages)
         if (package.full_name == store.selected) selected = &package;
     if (!selected) {
-        ImGui::Spacing();
-        ImGui::TextDisabled(store.packages.empty() ? "" : "Select a mod to see its details.");
-    } else {
-        const auto& package = *selected;
-        const auto& version = package.latest();
-        // Icon and name side by side, then the actions, so INSTALL never needs scrolling to.
-        draw_icon(panel, package, S(80));
-        ImGui::SameLine(0, S(14));
-        ImGui::BeginGroup();
-        ImGui::PushFont(fonts.heading);
-        ImGui::PushTextWrapPos(0);
-        ImGui::TextUnformatted(package.title().c_str());
-        ImGui::PopTextWrapPos();
-        ImGui::PopFont();
-        ImGui::TextDisabled("by %s", package.owner.c_str());
-        ImGui::EndGroup();
-        ImGui::Spacing();
-        // Tools (Blender add-ons, utilities) are not game mods: their page has the download.
-        const bool tool = package.in_category("Tools") && !package.in_category("Mods");
-        if (tool) {
-            push_primary_button();
-            if (ImGui::Button("GET IT ON THUNDERSTORE")) open_url(package.package_url);
-            pop_primary_button();
-        } else {
-            ImGui::BeginDisabled(installing);
-            push_primary_button();
-            if (ImGui::Button(action_label(package, installed).c_str())) start_store_install(panel, {package});
-            pop_primary_button();
-            ImGui::EndDisabled();
-            if (!package.package_url.empty()) {
-                ImGui::SameLine();
-                if (ImGui::Button("Thunderstore page")) open_url(package.package_url);
-            }
-        }
-        if (version.website_url.starts_with("https://")) {
-            ImGui::SameLine();
-            if (ImGui::Button("Website")) open_url(version.website_url);
-        }
-        ImGui::Spacing();
-        const auto field = [&](const char* name, const std::string& value) {
-            if (value.empty()) return;
-            ImGui::PushFont(fonts.caption);
-            ImGui::TextDisabled("%s", name);
-            ImGui::PopFont();
-            ImGui::PushTextWrapPos(0);
-            ImGui::TextUnformatted(value.c_str());
-            ImGui::PopTextWrapPos();
-        };
-        if (package.deprecated) {
-            ImGui::PushTextWrapPos(0);
-            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::warning), "Deprecated: its author no longer supports it.");
-            ImGui::PopTextWrapPos();
-        }
-        field("DESCRIPTION", version.description);
-        const auto found = installed.find(ts::folder_for(package.full_name));
-        field("VERSION", "v" + version.number + (found == installed.end() ? std::string()
-            : found->second.empty() ? "  (installed)" : "  (installed: v" + found->second + ")"));
-        field("DOWNLOADS", count_text(package.downloads));
-        field("UPDATED", date_text(package.date_updated));
-        if (version.file_size) field("DOWNLOAD SIZE", size_text(version.file_size));
-        std::string categories_text;
-        for (const auto& category : package.categories) categories_text += (categories_text.empty() ? "" : ", ") + category;
-        field("CATEGORIES", categories_text);
+        store.selected.clear();
+        return;
     }
+    const auto& package = *selected;
+    const auto& version = package.latest();
+    const auto installed = installed_versions(panel.list);
+    const auto found = installed.find(ts::folder_for(package.full_name));
+
+    if (!store.overview) {
+        ImGui::OpenPopup("##package_overview");
+        store.overview = true;
+    }
+    const ImVec2 extent(std::min(S(680), size.x - S(80)), std::min(S(560), size.y - S(80)));
+    ImGui::SetNextWindowPos(ImVec2((size.x - extent.x) * 0.5f, (size.y - extent.y) * 0.5f));
+    ImGui::SetNextWindowSize(extent);
+    if (!ImGui::BeginPopupModal("##package_overview", nullptr,
+            ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings)) {
+        store.overview = false;        // dismissed with Escape
+        store.selected.clear();
+        return;
+    }
+    const auto close = [&] {
+        store.overview = false;
+        store.selected.clear();
+        ImGui::CloseCurrentPopup();
+    };
+    mod_icon(panel, &package, ImGui::GetCursorScreenPos(), S(84));
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + S(84) + S(16));
+    ImGui::BeginGroup();
+    ImGui::PushFont(fonts.heading);
+    ImGui::PushTextWrapPos(0);
+    ImGui::TextUnformatted(package.title().c_str());
+    ImGui::PopTextWrapPos();
+    ImGui::PopFont();
+    ImGui::TextDisabled("by %s", package.owner.c_str());
+    const auto facts = std::format("v{}{}  /  {} downloads  /  updated {}", version.number,
+        version.file_size ? "  /  " + size_text(version.file_size) : std::string(),
+        count_text(package.downloads), date_text(package.date_updated));
+    ImGui::TextDisabled("%s", facts.c_str());
+    ImGui::EndGroup();
+    ImGui::Spacing();
+
+    const bool tool = package.in_category("Tools") && !package.in_category("Mods");
+    if (tool) {
+        push_primary_button();
+        if (ImGui::Button("GET IT ON THUNDERSTORE", ImVec2(0, S(34)))) open_url(package.package_url);
+        pop_primary_button();
+    } else {
+        ImGui::BeginDisabled(installing);
+        push_primary_button();
+        if (ImGui::Button(action_label(package, installed).c_str(), ImVec2(0, S(34)))) {
+            start_store_install(panel, {package});
+            close();
+        }
+        pop_primary_button();
+        ImGui::EndDisabled();
+        if (!package.package_url.empty()) {
+            ImGui::SameLine();
+            if (ImGui::Button("Thunderstore page", ImVec2(0, S(34)))) open_url(package.package_url);
+        }
+    }
+    if (version.website_url.starts_with("https://")) {
+        ImGui::SameLine();
+        if (ImGui::Button("Website", ImVec2(0, S(34)))) open_url(version.website_url);
+    }
+    ImGui::Spacing();
+
+    ImGui::BeginChild("##overview_body",
+        ImVec2(0, std::max(S(80), extent.y - ImGui::GetCursorPosY() - S(24) - ImGui::GetFrameHeight())));
+    ImGui::PushTextWrapPos(0);
+    if (package.deprecated)
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::warning),
+            "Deprecated: its author no longer supports it.");
+    if (package.nsfw)
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::warning), "Marked as not safe for work.");
+    field(fonts, "DESCRIPTION", version.description);
+    if (found != installed.end())
+        field(fonts, "INSTALLED", found->second.empty() ? std::string("yes") : "v" + found->second);
+    std::string names;
+    for (const auto& category : package.categories) names += (names.empty() ? "" : ", ") + category;
+    field(fonts, "CATEGORIES", names);
+    field(fonts, "FOLDER", "Mods\\" + ts::folder_for(package.full_name));
+    ImGui::PopTextWrapPos();
     ImGui::EndChild();
+
+    ImGui::SetCursorPosY(extent.y - S(24) - ImGui::GetFrameHeight());
+    bool ticked = picked(store, package.full_name);
+    ImGui::BeginDisabled(tool);
+    if (ImGui::Checkbox("Install with the others I tick", &ticked)) pick(store, package.full_name, ticked);
+    ImGui::EndDisabled();
+    ImGui::SameLine(extent.x - S(28) - S(110));
+    if (ImGui::Button("CLOSE", ImVec2(S(110), 0))) close();
+    ImGui::EndPopup();
 }
 
 } // namespace dingosdk::launcher_gui::detail

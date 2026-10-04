@@ -2,7 +2,9 @@
 #include "launcher_support.h"
 #include "launcher_support_internal.h"
 
+#ifdef _WIN32
 #include <Windows.h>
+#endif
 
 #include <array>
 #include <cstdlib>
@@ -16,6 +18,7 @@ namespace {
 using detail::fail;
 } // namespace
 
+#ifdef _WIN32
 bool bindable_key(unsigned key) noexcept {
     if (key == 0 || key > 0xFE) return false;
     switch (key) {
@@ -93,7 +96,10 @@ OverlayKeys overlay_keys() noexcept {
     return keys;
 }
 
+#endif // _WIN32
+
 bool offline_mode() noexcept {
+#ifdef _WIN32
     static const bool offline = [] {
         const auto incoming_error = GetLastError();
         wchar_t value[2]{};
@@ -102,24 +108,42 @@ bool offline_mode() noexcept {
         return length == 1 && value[0] == L'1';
     }();
     return offline;
+#else
+    static const bool offline = [] {
+        const char *value = std::getenv("RESKATE_OFFLINE");
+        return value && value[0] == '1' && value[1] == '\0';
+    }();
+    return offline;
+#endif
 }
 
 std::uint64_t offline_steam_id() noexcept {
     static const std::uint64_t id = [] {
         constexpr std::uint64_t fallback = 0x0110000100000001ull;
+#ifdef _WIN32
         const auto incoming_error = GetLastError();
         char value[32]{};
         const auto length = GetEnvironmentVariableA("RESKATE_OFFLINE_STEAM_ID", value, sizeof(value));
         SetLastError(incoming_error);
         if (!length || length >= sizeof(value)) return fallback;
+#else
+        const char *env = std::getenv("RESKATE_OFFLINE_STEAM_ID");
+        if (!env || !env[0]) return fallback;
+        char value[32]{};
+        std::size_t length = 0;
+        for (; env[length] && length < sizeof(value) - 1; ++length) value[length] = env[length];
+        if (env[length]) return fallback;
+#endif
         char* end{};
         const auto parsed = std::strtoull(value, &end, 10);
         // Individual accounts in the public universe only.
-        return end && *end == '\0' && (parsed >> 52) == 0x011 ? parsed : fallback;
+        if (!end || *end != '\0' || (static_cast<std::uint64_t>(parsed) >> 52) != 0x011) return fallback;
+        return static_cast<std::uint64_t>(parsed);
     }();
     return id;
 }
 
+#ifdef _WIN32
 LaunchOptions parse_launch_options(const std::vector<std::wstring>& arguments) {
     LaunchOptions options;
     bool log_level_explicit = false;
@@ -219,5 +243,7 @@ SiblingPaths sibling_paths(const fs::path& launcher) {
     return {directory, directory / L"Skate.exe", directory / L"ReSkate.dll",
             directory / L"steam_api64.dll", directory / L"logs"};
 }
+
+#endif // _WIN32
 
 } // namespace dingosdk::launcher

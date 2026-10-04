@@ -5,8 +5,13 @@
 #include "Engine/Core/Text/word_filter.h"
 #include "Engine/Game/Build/supported_build.h"
 #include "Engine/Game/World/world_names.h"
+#ifdef _WIN32
 #include <Windows.h>
 #include <bcrypt.h>
+#else
+#include <fstream>
+#include <random>
+#endif
 #include <algorithm>
 #include <cmath>
 #include <array>
@@ -18,9 +23,21 @@ namespace dingosdk::server {
 namespace {
 std::uint64_t nonce() {
     std::uint64_t value{};
+#ifdef _WIN32
     if (BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(&value), sizeof(value), BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0 ||
         !value)
         throw std::runtime_error("Cannot generate a session code.");
+#else
+    // Preferred: OS entropy; fallback to std::random_device for containers without getrandom.
+    std::ifstream urandom("/dev/urandom", std::ios::binary);
+    if (urandom.read(reinterpret_cast<char *>(&value), sizeof(value)) && value) return value;
+    std::random_device device;
+    // Four rounds of sixteen bits each. Stopping as soon as `value` was
+    // non-zero would leave a session code with sixteen bits of entropy.
+    for (int i = 0; i < 4; ++i)
+        value = (value << 16) ^ static_cast<std::uint64_t>(device() & 0xFFFF);
+    if (!value) throw std::runtime_error("Cannot generate a session code.");
+#endif
     return value;
 }
 constexpr std::string_view help_text =

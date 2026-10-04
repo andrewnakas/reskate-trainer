@@ -35,7 +35,9 @@ std::uint16_t value_size(ebx::FieldType type) noexcept {
     }
 }
 // Every plain value and curve pointer of `type` placed at `start`, nested structures included.
-void walk(const ebx::Document &document, const ebx::TypeDescriptor &type, std::uint32_t start, Model &model, int depth) {
+using Names = std::vector<std::pair<std::uint16_t, std::string>>;
+void walk(const ebx::Document &document, const ebx::TypeDescriptor &type, std::uint32_t start, Model &model, int depth,
+          Names &names, const std::string &path) {
     if (depth > 16) throw std::runtime_error("the tuning's types nest too deeply");
     for (std::size_t i = 0; i < type.fieldCount; ++i) {
         const auto index = static_cast<std::size_t>(type.fieldIndex) + i;
@@ -44,13 +46,16 @@ void walk(const ebx::Document &document, const ebx::TypeDescriptor &type, std::u
         const auto kind = field.type();
         if (kind == ebx::FieldType::inherited || (kind == ebx::FieldType::structure && field.category() != ebx::FieldCategory::array)) {
             if (field.classRef >= document.types.size()) throw std::runtime_error("a tuning structure type is missing");
-            walk(document, document.types[field.classRef], kind == ebx::FieldType::inherited ? start : start + field.dataOffset,
-                 model, depth + 1);
+            const bool inherited = kind == ebx::FieldType::inherited;
+            walk(document, document.types[field.classRef], inherited ? start : start + field.dataOffset, model, depth + 1,
+                 names, inherited || field.name.empty() ? path : path.empty() ? field.name : path + "." + field.name);
             continue;
         }
         if (field.category() == ebx::FieldCategory::array) continue;
         const auto offset = start + field.dataOffset;
         if (offset < asset_fields_start) continue; // the object header and the asset's name
+        if (!field.name.empty() && offset < asset_size)
+            names.emplace_back(static_cast<std::uint16_t>(offset), path.empty() ? field.name : path + "." + field.name);
         if (kind == ebx::FieldType::pointer) {
             if (offset + 8 <= asset_size) model.curve_slots.push_back(static_cast<std::uint16_t>(offset));
             continue;
@@ -176,7 +181,13 @@ Model read_game_tuning(const std::filesystem::path &game_root) {
     Model model;
     model.image.resize(asset_size);
     std::memcpy(model.image.data(), root->rawImage.data(), asset_size);
-    walk(document, document.types[static_cast<std::size_t>(root->descriptor)], 0, model, 0);
+    Names names;
+    walk(document, document.types[static_cast<std::size_t>(root->descriptor)], 0, model, 0, names, {});
+    std::ranges::stable_sort(names, {}, &Names::value_type::first);
+    const auto name_at = [&](std::uint16_t offset) {
+        const auto found = std::ranges::lower_bound(names, offset, {}, &Names::value_type::first);
+        return found != names.end() && found->first == offset ? found->second : std::string{};
+    };
     std::ranges::sort(model.fields, {}, &Field::offset);
     for (std::size_t i = 1; i < model.fields.size(); ++i)
         if (model.fields[i].offset < model.fields[i - 1].offset + model.fields[i - 1].size)
@@ -195,6 +206,8 @@ Model read_game_tuning(const std::filesystem::path &game_root) {
         }
     }
     model.curve_slots = std::move(curve_slots);
+    for (const auto &field : model.fields) model.field_names.push_back(name_at(field.offset));
+    for (const auto slot : model.curve_slots) model.curve_names.push_back(name_at(slot));
     return model;
 }
 

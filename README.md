@@ -85,6 +85,20 @@ Only install mods you trust. Mods change game data, and custom scripts can run c
 `ReSkateServer-<version>.zip` of each release. See [Server/README.txt](Server/README.txt) for setup,
 `ReSkateServer.json`, admin commands, votes and the anti-cheat checks.
 
+### Linux servers
+
+Each release also ships `ReSkateServer-Linux-<version>.zip`: the same headless lobby as a native
+x86_64 Linux binary (no Wine, no game install). Setup in short:
+
+```sh
+unzip ReSkateServer-Linux-<version>.zip -d reskate-server && cd reskate-server
+./setup-linux-server-libs.sh
+./ReSkateServer            # writes ReSkateServer.json on first run; edit name/admins, restart
+```
+
+Details (Steam `.so` files, `world-layers.json`, `systemd`, ports, building from source with
+`cmake --preset linux-x64`) are in [Server/README-linux.md](Server/README-linux.md).
+
 ## Building from source
 
 ### Requirements

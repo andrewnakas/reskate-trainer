@@ -3,6 +3,7 @@
 #include "game_bundles.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Resource/ebx_document.h"
+#include "Engine/Core/Platform/path_text.h"
 #include <algorithm>
 #include <array>
 #include <fstream>
@@ -77,6 +78,15 @@ std::vector<Reference> read_references(const fs::path& gameRoot, const char* toc
     return result;
 }
 
+// Layers there is no sense in switching off. They stay in the node tree, so
+// their children are still found and still switchable, but they get no row of
+// their own: CoreGameAssets holds what every map is built out of, and a player
+// who turned it off lost the world with no clue which row had done it. A
+// choice already stored for one is keyed by row, so it simply stops applying.
+bool essential_layer(std::string_view bundle) {
+    return contains(leaf_of(lower(bundle)), "coregameassets");
+}
+
 std::string category(std::string_view bundle) {
     const auto path = lower(bundle);
     const auto leaf = leaf_of(path);
@@ -142,6 +152,7 @@ void add_map(WorldLayerCatalog& catalog, WorldMap map, const std::vector<Referen
     const std::string prefix(world_map_key(map));
     for (auto slot = first; slot < catalog.nodes.size(); ++slot) {
         const auto& node = catalog.nodes[slot];
+        if (essential_layer(node.bundle)) continue;
         const auto leaf = leaf_of(node.bundle);
         const auto key = prefix + "_" + (leaves[slug(leaf)] > 1 ? slug(node.bundle) : slug(leaf));
         auto label = leaf;
@@ -153,9 +164,9 @@ void add_map(WorldLayerCatalog& catalog, WorldMap map, const std::vector<Referen
 
 std::string stamp(const fs::path& gameRoot) {
     std::ostringstream out;
-    out << "1";
+    out << "2";   // 2: no row for the layers essential_layer keeps out
     for (const auto& source : maps) {
-        const auto path = gameRoot / L"Data" / fs::path(source.toc);
+        const auto path = gameRoot / "Data" / fs::path(source.toc);
         std::error_code error;
         const auto size = fs::file_size(path, error);
         const auto time = fs::last_write_time(path, error).time_since_epoch().count();
@@ -240,7 +251,7 @@ WorldLayerCatalog load_or_scan(const fs::path& gameRoot, const fs::path& file) {
     auto catalog = scan(gameRoot);
     std::error_code error;
     fs::create_directories(file.parent_path(), error);
-    const auto temporary = fs::path(file).concat(L".tmp");
+    const auto temporary = fs::path(file).concat(".tmp");
     {
         std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
         output << to_json(catalog, current);
@@ -252,10 +263,10 @@ WorldLayerCatalog load_or_scan(const fs::path& gameRoot, const fs::path& file) {
 
 WorldLayerCatalog read(const fs::path& file) {
     std::ifstream input(file, std::ios::binary);
-    if (!input) throw std::runtime_error("Cannot open " + file.string());
+    if (!input) throw std::runtime_error("Cannot open " + path_utf8(file));
     const std::string text{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
     return from_json(Json::parse(text.begin(), text.end()));
 }
 
-fs::path cache_file() { return content_cache::directory() / L"world-layers.json"; }
+fs::path cache_file() { return content_cache::directory() / "world-layers.json"; }
 }

@@ -221,15 +221,41 @@ constexpr wchar_t steam_key[] = LR"(Software\Valve\Steam)";
 constexpr wchar_t steam_process_key[] = LR"(Software\Valve\Steam\ActiveProcess)";
 constexpr std::uint64_t steam_id_base = 76561197960265728ull;
 
-// The account Steam was last signed in to: the live session when Steam is
-// running, otherwise the most recent entry in config/loginusers.vdf. Offline
-// mode reports it so the game keeps using the same settings save.
-std::optional<std::uint64_t> last_steam_id() {
-    if (const auto user = registry_dword(steam_process_key, L"ActiveUser"); user && *user)
-        return steam_id_base + *user;
-    const auto steam = registry_string(steam_key, L"SteamPath");
+// Under Proton the Steam client is the native Linux one. Proton's stand-in
+// steam.exe sets ActiveProcess\pid but never ActiveUser, and the
+// C:\Program Files (x86)\Steam it points SteamPath at holds no account files.
+// Steam passes the real client's directory to compatibility tools as a Unix
+// path in STEAM_COMPAT_CLIENT_INSTALL_PATH, which Wine's kernel32 maps to a
+// DOS one. Empty on Windows, and when Proton was not started by Steam.
+// Reported, with the cause and the fix, by BenjaminJAnderson in
+// https://github.com/Dingo-Shenanigans/ReSkate/issues/5.
+fs::path proton_steam_directory() {
+    std::array<wchar_t, 32768> unix_path{};
+    const auto length = GetEnvironmentVariableW(L"STEAM_COMPAT_CLIENT_INSTALL_PATH", unix_path.data(),
+        static_cast<DWORD>(unix_path.size()));
+    if (!length || length >= unix_path.size()) return {};
+    using Convert = wchar_t*(__cdecl*)(const char*);
+    const auto convert = reinterpret_cast<Convert>(
+        GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "wine_get_dos_file_name"));
+    if (!convert) return {};
+    const auto dos_path = convert(utf8(std::wstring_view(unix_path.data(), length)).c_str());
+    if (!dos_path) return {};
+    fs::path directory(dos_path);
+    HeapFree(GetProcessHeap(), 0, dos_path);
+    return directory;
+}
+
+// The Steam client's directory, where config/loginusers.vdf lists its accounts.
+fs::path steam_directory() {
+    if (auto native = proton_steam_directory(); !native.empty()) return native;
+    return registry_string(steam_key, L"SteamPath");
+}
+
+// The account config/loginusers.vdf marks as most recent, otherwise its first.
+// Steam has written that key as both MostRecent and mostrecent.
+std::optional<std::uint64_t> recent_steam_id(const fs::path& steam) {
     if (steam.empty()) return std::nullopt;
-    std::ifstream file(fs::path(steam) / L"config" / L"loginusers.vdf");
+    std::ifstream file(steam / L"config" / L"loginusers.vdf");
     std::optional<std::uint64_t> first, recent, current;
     std::string line;
     while (std::getline(file, line)) {
@@ -241,11 +267,29 @@ std::optional<std::uint64_t> last_steam_id() {
             token.find_first_not_of("0123456789") == std::string::npos) {
             current = std::stoull(token);
             if (!first) first = current;
-        } else if (token == "MostRecent" && current && line.find("\"1\"", close) != std::string::npos) {
+        } else if (_stricmp(token.c_str(), "MostRecent") == 0 && current &&
+                   line.find("\"1\"", close) != std::string::npos) {
             recent = current;
         }
     }
     return recent ? recent : first;
+}
+
+// The account the running Steam client is signed in to. Steam for Windows
+// publishes it as ActiveUser. Proton does not, but there the launcher was
+// started by the native client, which is signed in to its most recent account.
+std::optional<std::uint64_t> active_steam_id() {
+    if (const auto user = registry_dword(steam_process_key, L"ActiveUser"); user && *user)
+        return steam_id_base + *user;
+    return recent_steam_id(proton_steam_directory());
+}
+
+// The account Steam was last signed in to: the live session when Steam is
+// running, otherwise the most recent entry in config/loginusers.vdf. Offline
+// mode reports it so the game keeps using the same settings save.
+std::optional<std::uint64_t> last_steam_id() {
+    if (const auto active = active_steam_id()) return active;
+    return recent_steam_id(steam_directory());
 }
 
 void configure_environment(const fs::path& logs) {
@@ -379,7 +423,10 @@ RemoteModule inject_dll(HANDLE process, DWORD process_id, const fs::path& dll) {
     SIZE_T written{};
     if (!WriteProcessMemory(process, remote_path.get(), path.c_str(), byte_count, &written) ||
         written != byte_count) win32_failure(L"WriteProcessMemory(ReSkate.dll path)");
-    const auto loader = dingosdk::launcher::validated_remote_load_library(process);
+    std::string hook_note;
+    const auto loader = dingosdk::launcher::validated_remote_load_library(process, &hook_note);
+    if (!hook_note.empty())
+        dingosdk::logging::write(dingosdk::logging::Level::warning, dingosdk::logging::Channel::launcher, hook_note);
     std::wostringstream address;
     address << L"Starting ordinary LoadLibraryW injection at 0x" << std::hex << loader;
     dingosdk::logging::write(dingosdk::logging::Level::info, dingosdk::logging::Channel::launcher, address.str());
@@ -456,8 +503,7 @@ void relaunch(const fs::path& self, const std::vector<std::wstring>& arguments) 
 
 bool steam_signed_in() {
     const auto pid = registry_dword(steam_process_key, L"pid");
-    const auto user = registry_dword(steam_process_key, L"ActiveUser");
-    if (!pid || !*pid || !user || !*user) return false;
+    if (!pid || !*pid || !active_steam_id()) return false;
     Handle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, *pid));
     DWORD code{};
     if (!process.get() || !GetExitCodeProcess(process.get(), &code) || code != STILL_ACTIVE) return false;
@@ -470,9 +516,9 @@ bool steam_signed_in() {
 
 std::string steam_persona_name() {
     if (!steam_signed_in()) return {};
-    const auto user = registry_dword(steam_process_key, L"ActiveUser");
-    if (!user || !*user) return {};
-    const auto id = std::to_string(steam_id_base + *user);
+    const auto user = active_steam_id();
+    if (!user) return {};
+    const auto id = std::to_string(*user);
     // loginusers.vdf: "<SteamID64>" { ... "PersonaName" "<name>" ... }, UTF-8 with VDF escapes.
     const auto quoted = [](std::string_view line) {
         std::vector<std::string> tokens;
@@ -488,8 +534,8 @@ std::string steam_persona_name() {
         return tokens;
     };
     std::string name;
-    if (const auto steam = registry_string(steam_key, L"SteamPath"); !steam.empty()) {
-        std::ifstream file(fs::path(steam) / L"config" / L"loginusers.vdf");
+    if (const auto steam = steam_directory(); !steam.empty()) {
+        std::ifstream file(steam / L"config" / L"loginusers.vdf");
         bool account{};
         for (std::string line; std::getline(file, line);) {
             const auto tokens = quoted(line);
@@ -605,21 +651,30 @@ DWORD start_game(const Session& session, const launcher::LaunchOptions& options,
         logging::log(logging::Level::warning, logging::Channel::world, "World layers could not be read: {}", error.what());
     }
     configure_environment(paths.logs);
-    const bool loose_files = options.loose_files && initfs::loose_files_preference(paths.directory);
-    set_environment(L"RESKATE_LOOSE_FILES", loose_files ? L"1" : L"0");
+    bool loose_files = options.loose_files && initfs::loose_files_preference(paths.directory);
     if (loose_files) {
-        fs::create_directories(paths.directory / L"scripts" / L"Custom");
-        const auto exported = initfs::export_files(paths.game,
-            initfs::data_directory(paths.directory, options.game_arguments), paths.directory, true);
-        if (exported.already_exported) {
-            logging::write(logging::Level::info, logging::Channel::assets,
-                "Using existing scripts/ and config/ export; edits and removed files are preserved.");
-        } else {
-            logging::log(logging::Level::info, logging::Channel::assets,
-                "InitFS exported: {} Lua, {} configs; {} created, {} existing files preserved, {} skipped.",
-                exported.scripts, exported.configs, exported.created, exported.preserved, exported.skipped);
+        try {
+            fs::create_directories(paths.directory / L"scripts" / L"Custom");
+            const auto exported = initfs::export_files(paths.game,
+                initfs::data_directory(paths.directory, options.game_arguments), paths.directory, true);
+            if (exported.already_exported) {
+                logging::write(logging::Level::info, logging::Channel::assets,
+                    "Using existing scripts/ and config/ export; edits and removed files are preserved.");
+            } else {
+                logging::log(logging::Level::info, logging::Channel::assets,
+                    "InitFS exported: {} Lua, {} configs; {} created, {} existing files preserved, {} skipped.",
+                    exported.scripts, exported.configs, exported.created, exported.preserved, exported.skipped);
+            }
+        } catch (const std::exception& failure) {
+            // An install under Program Files is the usual reason. Skate plays
+            // without loose scripts; only editing them is lost.
+            loose_files = false;
+            logging::log(logging::Level::warning, logging::Channel::assets,
+                "Loose files are off for this launch: scripts/ and config/ could not be exported ({}). Skate still "
+                "starts; editing them needs a folder ReSkate is allowed to write to.", failure.what());
         }
     }
+    set_environment(L"RESKATE_LOOSE_FILES", loose_files ? L"1" : L"0");
     set_environment(L"RESKATE_LOG_CONSOLE", options.window_console ? L"1" : L"0");
     set_environment(L"RESKATE_LOG_LEVEL", widen(options.log_level).c_str());
     set_environment(L"RESKATE_FORCE_WINDOWED", options.force_windowed ? L"1" : L"0");

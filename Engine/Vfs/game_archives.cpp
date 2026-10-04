@@ -1,5 +1,6 @@
 #include "game_archives.h"
 #include "Engine/Resource/cas_codec.h"
+#include "Engine/Core/Platform/path_text.h"
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -26,7 +27,7 @@ Layout read_layout(const fs::path& path) {
     Layout layout{{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()}, {}};
     if (layout.buffer.size() <= native_db::envelope_size ||
         std::memcmp(layout.buffer.data(), native_db::magic, sizeof(native_db::magic)))
-        throw std::runtime_error("Unrecognized native envelope in " + path.string());
+        throw std::runtime_error("Unrecognized native envelope in " + path_utf8(path));
     layout.root = native_db::read(std::span<const unsigned char>(layout.buffer).subspan(native_db::envelope_size),
                                   "layout.toc", nullptr, {.unique_fields = false});
     return layout;
@@ -42,7 +43,7 @@ std::vector<std::uint32_t> GameArchives::chunks_in(const std::string& directory)
 GameArchives::GameArchives(fs::path root, const native_db::Node& layout) : root_(std::move(root)) {
     std::map<std::set<std::uint16_t>, std::vector<std::string>> byArchives;
     std::error_code error;
-    const auto win32 = root_ / L"Win32";
+    const auto win32 = root_ / "Win32";
     for (fs::recursive_directory_iterator it(win32, error), end; it != end && !error; it.increment(error)) {
         if (!it->is_regular_file(error) || error) { error.clear(); continue; }
         if (lower(it->path().extension().string()) != ".cas") continue;
@@ -105,14 +106,14 @@ fb::BinaryBundle GameArchives::read_manifest(const fs::path& root, const fb::Cas
 
 std::vector<std::byte> GameArchives::read(const fs::path& root, const fb::CasIdentifier& location,
                                           std::uint32_t offset, std::uint32_t size) const {
-    const auto path = root / L"Win32" / fs::path(directory(location.installChunk)) /
+    const auto path = root / "Win32" / fs::path(directory(location.installChunk)) /
         fs::path(archive_file(location.archive));
     std::ifstream input(path, std::ios::binary);
-    if (!input) throw std::runtime_error("Cannot open " + path.string());
+    if (!input) throw std::runtime_error("Cannot open " + path_utf8(path));
     input.seekg(static_cast<std::streamoff>(offset));
     std::vector<std::byte> bytes(size);
     if (size && !input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(size)))
-        throw std::runtime_error("Cannot read " + path.string());
+        throw std::runtime_error("Cannot read " + path_utf8(path));
     return bytes;
 }
 
@@ -125,7 +126,7 @@ std::string GameArchives::describe(const fb::CasIdentifier& location) const {
 std::optional<std::uint64_t> GameArchives::archive_size(const fs::path& root, const fb::CasIdentifier& location) {
     const auto* directory = find_directory(location.installChunk);
     if (!directory) return std::nullopt;
-    const auto path = root / L"Win32" / fs::path(*directory) / fs::path(archive_file(location.archive));
+    const auto path = root / "Win32" / fs::path(*directory) / fs::path(archive_file(location.archive));
     const auto known = sizes_.find(path.wstring());
     if (known != sizes_.end()) return known->second;
     std::error_code error;

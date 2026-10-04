@@ -1,6 +1,8 @@
 #pragma once
 
+#ifdef _WIN32
 #include <Windows.h>
+#endif
 
 #include <stdexcept>
 #include <string>
@@ -8,6 +10,7 @@
 // Shared by launcher_support.cpp, launcher_pe.cpp and launcher_injection.cpp.
 namespace dingosdk::launcher::detail {
 
+#ifdef _WIN32
 class Handle {
 public:
     explicit Handle(HANDLE value = nullptr) noexcept : value_(value) {}
@@ -29,11 +32,12 @@ private:
     HANDLE value_{};
 };
 
-[[noreturn]] inline void fail(const char* message) { throw std::runtime_error(message); }
-
 [[noreturn]] inline void fail_windows(const char* message, DWORD error = GetLastError()) {
     throw std::runtime_error(std::string(message) + " (Windows error " +
         std::to_string(error) + ")");
 }
+#endif
+
+[[noreturn]] inline void fail(const char* message) { throw std::runtime_error(message); }
 
 } // namespace dingosdk::launcher::detail

@@ -53,9 +53,10 @@ bool gameplay_setting_key(const void* reference, std::string& key) {
 
 // Every script settings get the game makes (several a frame from its expressions) asks this. One
 // store lookup per setting asset and profile change, cached on the asking thread in a small
-// direct-mapped table: a hit is three peeks and compares, with no heap string, store lock or map
-// walk (~0.5% of a multiplayer client frame before, profiled 2026-10-02). A hit needs the same
-// asset, name address and first 8 name bytes, so a reused address cannot answer for another setting.
+// direct-mapped table: a hit is two peeks, a copy of the name and compares, with no heap string,
+// store lock or map walk (~0.5% of a multiplayer client frame before, profiled 2026-10-02). A hit
+// needs the same asset and the same whole name, so a reused address cannot answer for another
+// setting (many share their first bytes: egf_enable..., egf_exp_...).
 const dingosdk::Json* saved_gameplay_json(const void* reference) {
     auto& s = local_runtime();
     if (!s.active.load(std::memory_order_acquire)) return nullptr;
@@ -63,25 +64,20 @@ const dingosdk::Json* saved_gameplay_json(const void* reference) {
     if (!memory::peek(reinterpret_cast<std::uintptr_t>(reference), asset)) return nullptr;
     asset &= ~std::uintptr_t{4};
     if (!asset || !memory::peek(asset + 0x60, name) || !name) return nullptr;
-    std::uint64_t prefix{};
-    (void)memory::peek(name, prefix); // a short name at the end of a page stays 0: a miss refills
-    struct Entry { std::uintptr_t asset{}, name{}; std::uint64_t prefix{}, changes{}; std::optional<dingosdk::Json> value; };
+    char text[256];
+    const auto length = memory::peek_cstring(name, text, sizeof(text));
+    if (length <= 0) return nullptr;
+    const std::string_view key(text, static_cast<std::size_t>(length));
+    struct Entry { std::uintptr_t asset{}; std::uint64_t changes{}; std::string key; std::optional<dingosdk::Json> value; };
     thread_local std::array<Entry, 256> cache;
     const auto changes = profile::Store::changes();
     auto& entry = cache[((asset >> 4) ^ (asset >> 12)) & 255];
-    if (entry.asset != asset || entry.name != name || entry.prefix != prefix || entry.changes != changes) {
-        char text[256];
-        const auto length = memory::peek_cstring(name, text, sizeof(text));
-        if (length <= 0) return nullptr;
-        for (std::ptrdiff_t i = 0; i < length; ++i) {
-            const auto c = static_cast<unsigned char>(text[i]);
-            if (c < 32 || c == 127) return nullptr;
-        }
+    if (entry.asset != asset || entry.changes != changes || entry.key != key) {
+        for (const unsigned char c : key) if (c < 32 || c == 127) return nullptr;
         entry.changes = 0;
-        entry.value = s.store->user_value(std::string_view(text, static_cast<std::size_t>(length)));
+        entry.value = s.store->user_value(key);
+        entry.key = key;
         entry.asset = asset;
-        entry.name = name;
-        entry.prefix = prefix;
         entry.changes = changes;
     }
     return entry.value ? &*entry.value : nullptr;

@@ -127,19 +127,33 @@ private:
     std::unordered_map<std::uint32_t, std::string> cache_;
 };
 
-// Appends `path` to the pool and a full/leaf row pair for it in `bundle`.
-void insert(std::vector<std::byte>& data, std::vector<std::byte>& meta, const std::string& path, std::uint32_t bundle) {
+// Appends `path` to the pool and a full/leaf row pair for it in `bundle`. A
+// leaf name another preset already answers to stays that preset's: the table
+// holds one row per hash, and mods number their presets alike (1_ap, 2_ap ...)
+// in different folders. Returns that preset's path, empty when the leaf row
+// went in too.
+std::string insert(std::vector<std::byte>& data, std::vector<std::byte>& meta, const std::string& path, std::uint32_t bundle) {
     const auto table = Reader(data, meta).out;
     const auto full = hash(path), short_name = hash(leaf(path));
-    if (full == short_name || std::ranges::any_of(table.rows, [&](const Row& row) { return row.hash == full || row.hash == short_name; }))
-        throw std::runtime_error(path + " collides with an existing lookup");
+    const auto held = [&](std::uint64_t wanted) {
+        return std::ranges::any_of(table.rows, [&](const Row& row) { return row.hash == wanted; });
+    };
+    if (held(full)) throw std::runtime_error(path + " collides with an existing lookup");
+    // A path with no folder is its own leaf and has the one row.
+    const bool with_leaf = full != short_name && !held(short_name);
+    std::string holder;
+    if (full != short_name && !with_leaf) {
+        holder = "another lookup";
+        for (const auto& preset : table.presets)
+            if (hash(leaf(preset.first)) == short_name) { holder = preset.first; break; }
+    }
     if (path.size() > 255) throw std::runtime_error(path + " is too long for a lookup");
     const auto growth = (4 + path.size() + 15) & ~std::size_t{15};
     const auto offset = table.bundles - table.pool;
     if (offset > 0x7FFFFF) throw std::runtime_error("bundle-reference path pool is full");
     const auto token = static_cast<std::uint32_t>(offset) | 0x800000U | (static_cast<std::uint32_t>(path.size()) << 24);
     const auto bundles = table.bundles + growth, lookups = table.lookups + growth;
-    const auto payload = table.payload + growth + 32;
+    const auto payload = table.payload + growth + (with_leaf ? 32 : 16);
     std::vector<std::byte> out(payload + 20);
     std::copy_n(data.begin(), table.bundles, out.begin());
     put32(out, table.bundles, none);
@@ -148,7 +162,7 @@ void insert(std::vector<std::byte>& data, std::vector<std::byte>& meta, const st
               out.begin() + static_cast<std::ptrdiff_t>(bundles));
     auto rows = table.rows;
     rows.push_back({full, bundle, token});
-    rows.push_back({short_name, bundle, token});
+    if (with_leaf) rows.push_back({short_name, bundle, token});
     std::ranges::sort(rows, {}, &Row::hash);
     for (std::size_t i = 0; i < rows.size(); ++i) {
         put64(out, lookups + i * 16, rows[i].hash);
@@ -161,6 +175,7 @@ void insert(std::vector<std::byte>& data, std::vector<std::byte>& meta, const st
     put32(out, 72, static_cast<std::uint32_t>(rows.size()));
     put32(meta, 0, static_cast<std::uint32_t>(payload));
     data = std::move(out);
+    return holder;
 }
 } // namespace
 
@@ -176,7 +191,8 @@ MergedTable merge(const Table& base, std::span<const Table> edits) {
     const std::span<const std::byte> base_bundles = base.resource.subspan(original.bundles, original.lookups - original.bundles);
     MergedTable result{{base.resource.begin(), base.resource.end()}, {base.resourceMeta.begin(), base.resourceMeta.end()}};
     std::map<std::string, std::uint32_t> added;
-    for (const auto& edit : edits) {
+    for (std::size_t index = 0; index < edits.size(); ++index) {
+        const auto& edit = edits[index];
         const auto copy = Reader(edit.resource, edit.resourceMeta).out;
         // Additions only: the same bundle list, and every base preset where it was.
         const auto bundles = edit.resource.subspan(copy.bundles, copy.lookups - copy.bundles);
@@ -193,7 +209,8 @@ MergedTable merge(const Table& base, std::span<const Table> edits) {
                 if (found->second != bundle) ++result.conflicts;
                 continue;
             }
-            insert(result.resource, result.resourceMeta, path, bundle);
+            if (auto holder = insert(result.resource, result.resourceMeta, path, bundle); !holder.empty())
+                result.shadowed.push_back({index, path, std::move(holder)});
             added.emplace(path, bundle);
             ++result.added;
         }

@@ -195,6 +195,9 @@ public:
 private:
     class Update;
     void commit(Snapshot);
+    // Advances changes(). Called by every save once value_ holds the new values and before mutex_
+    // is released, so a reader that sees the new count never looks up an old value.
+    static void note_change() noexcept;
     std::filesystem::path path_;
     std::unique_ptr<storage::SaveDatabase> database_;
     mutable std::mutex mutex_;

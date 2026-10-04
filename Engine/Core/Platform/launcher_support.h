@@ -1,6 +1,8 @@
 #pragma once
 
+#ifdef _WIN32
 #include <Windows.h>
+#endif
 
 #include "Engine/Game/Build/supported_build.h"
 
@@ -34,6 +36,7 @@ struct PeFileInfo {
     bool pe64{};
 };
 
+#ifdef _WIN32
 struct LaunchOptions {
     unsigned width{1280};
     unsigned height{720};
@@ -89,11 +92,15 @@ private:
 };
 
 SiblingPaths sibling_paths(const std::filesystem::path& launcher);
-std::string sha256_file(const std::filesystem::path& path);
 PeFileInfo inspect_pe_file(const std::filesystem::path& path);
 std::uint32_t exported_function_rva(const std::filesystem::path& path,
                                     std::string_view export_name);
 void validate_game_file(const std::filesystem::path& path);
+#else
+// Linux dedicated server: no PE image checks. Validation is a size/hash check
+// in launcher_pe.cpp; PE helpers are Windows-only.
+#endif
+std::string sha256_file(const std::filesystem::path& path);
 void validate_steam_api_file(const std::filesystem::path& path);
 
 // -offline: the launcher sets RESKATE_OFFLINE=1 so the game runs without Steam,
@@ -104,6 +111,7 @@ bool offline_mode() noexcept;
 // Steam was last signed in to, so the game keeps the same settings save.
 std::uint64_t offline_steam_id() noexcept;
 
+#ifdef _WIN32
 // Keys that open ReSkate's menu and console in game.
 inline constexpr unsigned default_menu_key = 0x2D;     // VK_INSERT
 inline constexpr unsigned default_console_key = 0xC0;  // VK_OEM_3
@@ -128,6 +136,19 @@ LoaderGate prepare_loader_for_injection(HANDLE process, HANDLE primary_thread,
 
 // Returns the ordinary LoadLibraryW address for a same-architecture suspended
 // child only after verifying the matching KnownDLL mapping and entry bytes.
-std::uintptr_t validated_remote_load_library(HANDLE process);
+// An entry hooked by anti-virus or an overlay is allowed through when the rest
+// of the function is still Windows' own; `note`, when given, is then filled
+// with what was found so the caller can log it.
+std::uintptr_t validated_remote_load_library(HANDLE process, std::string* note = nullptr);
+#else
+// Linux: virtual-key names and loader injection are Windows-only.
+inline constexpr unsigned default_menu_key = 0x2D;
+inline constexpr unsigned default_console_key = 0xC0;
+struct OverlayKeys { unsigned menu{default_menu_key}, console{default_console_key}; };
+inline OverlayKeys overlay_keys() noexcept { return {}; }
+inline bool bindable_key(unsigned) noexcept { return false; }
+inline std::string key_name(unsigned key) { return "Key " + std::to_string(key); }
+inline std::string key_cap(unsigned key) { return key_name(key); }
+#endif
 
 } // namespace dingosdk::launcher

@@ -2,10 +2,19 @@
 #include "steam_lanes.h"
 #include "Extension/Multiplayer/Net/wire_codec.h"
 #include "Engine/Core/Platform/launcher_support.h"
+#ifdef _WIN32
 #include <Windows.h>
+#else
+#include <chrono>
+#include <dlfcn.h>
+#endif
+#ifdef _WIN32
 #pragma warning(push, 0)
+#endif
 #include <isteamnetworkingsockets.h>
+#ifdef _WIN32
 #pragma warning(pop)
+#endif
 #include <array>
 #include <atomic>
 #include <algorithm>
@@ -20,14 +29,38 @@
 namespace dingosdk::multiplayer {
 namespace {
 constexpr int virtual_port = 37;
-template <class T> T symbol(HMODULE module, const char *name) {
+#ifdef _WIN32
+using NativeModule = HMODULE;
+#else
+using NativeModule = void *;
+using ULONGLONG = std::uint64_t;
+inline std::uint64_t tick_ms() noexcept {
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                          std::chrono::steady_clock::now().time_since_epoch())
+                                          .count());
+}
+#ifndef GetTickCount64
+#define GetTickCount64 tick_ms
+#endif
+#endif
+template <class T> T symbol(NativeModule module, const char *name) {
+#ifdef _WIN32
     const auto result = GetProcAddress(module, name);
+#else
+    const auto result = dlsym(module, name);
+#endif
     if (!result)
         throw std::runtime_error(std::string("Missing Steam export: ") + name);
+#ifdef _WIN32
 #pragma warning(push)
 #pragma warning(disable : 4191)
     return reinterpret_cast<T>(result);
 #pragma warning(pop)
+#else
+    T value{};
+    std::memcpy(&value, &result, sizeof(value));
+    return value;
+#endif
 }
 std::string bounded(const char *text, std::size_t size) {
     std::size_t length{};
@@ -226,7 +259,7 @@ SteamTransport::~SteamTransport() {
 // Binds the networking calls for `sockets` (the user's or a game server's).
 bool SteamTransport::bind(void *library, void *sockets, void *networking_utils) {
     auto &p = *impl_;
-    const auto module = static_cast<HMODULE>(library);
+    const auto module = static_cast<NativeModule>(library);
     p.sockets = sockets;
     if (!p.sockets)
         throw std::runtime_error("Steam Networking Sockets v012 is unavailable.");
@@ -280,6 +313,7 @@ bool SteamTransport::open() {
     auto &p = *impl_;
     if (p.state.ready)
         return true;
+#ifdef _WIN32
     try {
         if (launcher::offline_mode())
             throw std::runtime_error("Multiplayer is unavailable in offline mode. Start Steam and relaunch ReSkate.");
@@ -309,27 +343,53 @@ bool SteamTransport::open() {
         } catch (...) {
             p.friends = nullptr;
         }
-        return bind(module, symbol<void *(*)()>(module, "SteamAPI_SteamNetworkingSockets_SteamAPI_v012")(),
+        void *sockets = nullptr;
+        for (const char *name : {"SteamAPI_SteamNetworkingSockets_SteamAPI_v013",
+                                 "SteamAPI_SteamNetworkingSockets_SteamAPI_v012"}) {
+            try {
+                sockets = symbol<void *(*)()>(module, name)();
+                break;
+            } catch (...) {
+            }
+        }
+        if (!sockets) throw std::runtime_error("Missing Steam export: SteamAPI_SteamNetworkingSockets_SteamAPI");
+        return bind(module, sockets,
                     symbol<void *(*)()>(module, "SteamAPI_SteamNetworkingUtils_SteamAPI_v004")());
     } catch (const std::exception &e) {
         p.state.detail = e.what();
         return false;
     }
+#else
+    // Client game path is Windows-only. Dedicated servers use open_game_server().
+    p.state.detail = "Client multiplayer is only supported on Windows.";
+    return false;
+#endif
 }
 bool SteamTransport::open_game_server(void *library) {
     auto &p = *impl_;
     if (p.state.ready)
         return true;
     try {
-        const auto module = static_cast<HMODULE>(library);
+        const auto module = static_cast<NativeModule>(library);
         const auto user = symbol<int (*)()>(module, "SteamGameServer_GetHSteamUser")();
         if (!user)
             throw std::runtime_error("The Steam game server is not initialized.");
         const auto find = symbol<void *(*)(int, const char *)>(module, "SteamInternal_FindOrCreateGameServerInterface");
         // Game servers have no friends list; names come from each player's hello.
         p.friends = nullptr;
-        return bind(module, symbol<void *(*)()>(module, "SteamAPI_SteamGameServerNetworkingSockets_SteamAPI_v012")(),
-                    find(user, "SteamNetworkingUtils004"));
+        // Sockets v012 (Skate's Windows DLL) vs v013 (current SDK): same methods
+        // used here, v013 is a superset. Try new first, fall back to old.
+        void *sockets = nullptr;
+        for (const char *name : {"SteamAPI_SteamGameServerNetworkingSockets_SteamAPI_v013",
+                                 "SteamAPI_SteamGameServerNetworkingSockets_SteamAPI_v012"}) {
+            try {
+                sockets = symbol<void *(*)()>(module, name)();
+                break;
+            } catch (...) {
+            }
+        }
+        if (!sockets) throw std::runtime_error("Missing Steam export: SteamAPI_SteamGameServerNetworkingSockets_SteamAPI");
+        return bind(module, sockets, find(user, "SteamNetworkingUtils004"));
     } catch (const std::exception &e) {
         p.state.detail = e.what();
         return false;
@@ -522,9 +582,16 @@ std::string SteamTransport::name(std::uint64_t id) {
     p.request_name(p.friends, id, true);
     const auto *value = p.persona_name(p.friends, id);
     auto text = value ? bounded(value, 128) : std::string{};
+#ifdef _WIN32
     while (!text.empty() && !MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(),
                                                  static_cast<int>(text.size()), nullptr, 0))
         text.pop_back();
+#else
+    // Minimal UTF-8 truncation: drop trailing continuation bytes (game servers
+    // never reach here anyway; names come from hello messages).
+    while (!text.empty() && (static_cast<unsigned char>(text.back()) & 0xC0) == 0x80) text.pop_back();
+    if (!text.empty() && (static_cast<unsigned char>(text.back()) & 0xC0) == 0xC0) text.pop_back();
+#endif
     for (auto &c : text)
         if (static_cast<unsigned char>(c) < 32 || c == 127)
             c = ' ';

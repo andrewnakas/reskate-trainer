@@ -1,8 +1,11 @@
 #include "content_cache.h"
 #include "content_cache_internal.h"
 #include "Engine/Game/Build/supported_build.h"
+#ifdef _WIN32
 #include <Windows.h>
+#endif
 #include <array>
+#include <cstdlib>
 #include <fstream>
 #include <stdexcept>
 
@@ -15,10 +18,22 @@ const Pack& supported_pack() {
 }
 
 std::filesystem::path directory(const Pack& pack) {
+#ifdef _WIN32
     std::array<wchar_t, 32768> local{};
     const auto length = GetEnvironmentVariableW(L"LOCALAPPDATA", local.data(), static_cast<DWORD>(local.size()));
     if (!length || length >= local.size()) throw std::runtime_error("LOCALAPPDATA is unavailable");
     return std::filesystem::path(local.data()) / L"ReSkate" / L"cache" / pack.build;
+#else
+    // Linux: XDG cache or ~/.cache. Dedicated servers rarely need this
+    // (world layers come from world-layers.json), but scan caching uses it.
+    if (const char *xdg = std::getenv("XDG_CACHE_HOME"); xdg && xdg[0]) {
+        std::filesystem::path base(xdg);
+        if (base.is_absolute()) return base / "ReSkate" / "cache" / pack.build;
+    }
+    if (const char *home = std::getenv("HOME"); home && home[0])
+        return std::filesystem::path(home) / ".cache" / "ReSkate" / "cache" / pack.build;
+    throw std::runtime_error("HOME is unavailable");
+#endif
 }
 
 bool installed(const std::filesystem::path& folder, const Pack& pack) {

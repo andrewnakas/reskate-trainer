@@ -2,6 +2,7 @@
 #include "Engine/Resource/cas_codec.h"
 #include "Engine/Resource/ebx_document.h"
 #include "Engine/Resource/ebx_writer.h"
+#include "Engine/Core/Platform/path_text.h"
 
 #include <optional>
 #include <stdexcept>
@@ -128,7 +129,7 @@ GridPlan plan_material_grid(const std::vector<const Mod*>& mods,
     // Lowest priority first, the order the merge layers mods in.
     for (auto at = mods.rbegin(); at != mods.rend(); ++at) {
         const auto* mod = *at;
-        const auto modName = mod->directory.filename().string();
+        const auto modName = path_utf8(mod->directory.filename());
         for (const auto& relative : modFiles.at(mod).tocs) {
             try {
                 const auto toc = fb::read_toc(read_file(mod->directory / fs::path(relative)));
@@ -190,7 +191,7 @@ GridPlan plan_material_grid(const std::vector<const Mod*>& mods,
     grid::Combiner combiner(*base);
     std::size_t combined{};
     for (auto& contribution : contributions) {
-        const auto modName = contribution.mod->directory.filename().string();
+        const auto modName = path_utf8(contribution.mod->directory.filename());
         const auto before = combiner.slots();
         grid::SlotMap slots;
         try {

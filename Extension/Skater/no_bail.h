@@ -14,6 +14,17 @@ void clear_no_bail() noexcept;
 // Releasing it also leaves the skater's teleport option on the board again, since a turn's
 // teleport may have set it off (skater component +0xc0) and the SDK's own teleports keep it.
 void update_board_lock(std::uintptr_t client, std::uintptr_t entity, bool locked) noexcept;
+// The physics state the local skater's selector last chose, for the trainer (air time, bail
+// markers). Publish the skater to watch from the client tick; it expires if ticks stop.
+struct PhysicsStateWatch {
+    bool valid{};
+    std::uint32_t state{};
+    std::uint32_t previous{}; // the state before this one
+    float previous_seconds{}; // how long that one lasted
+    std::uint64_t changes{}, wipeouts{}; // counted since the process started
+};
+void watch_physics_state(std::uintptr_t client, std::uintptr_t entity) noexcept;
+PhysicsStateWatch watched_physics_state() noexcept;
 // Stopping flight must not discard the independent manual preference.
 void clear_no_bail_flight() noexcept;
 }

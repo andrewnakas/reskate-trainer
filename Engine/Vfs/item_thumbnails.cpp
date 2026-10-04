@@ -1,5 +1,6 @@
 #include "item_thumbnails.h"
 #include "game_bundles.h"
+#include "Engine/Core/Platform/path_text.h"
 #include <algorithm>
 #include <stdexcept>
 
@@ -32,7 +33,7 @@ ThumbnailRead read_build_kit_thumbnails(const std::filesystem::path& gameRoot, s
             bundle = data.read_bundle(toc, bundle_name);
         } catch (const std::exception& failure) {
             if (problems.size() < 600)
-                problems += "; " + it->path().filename().string() + ": " + failure.what();
+                problems += "; " + path_utf8(it->path().filename()) + ": " + failure.what();
         }
     }
     if (!bundle) throw std::runtime_error("The game's thumbnail bundle was not found" + problems);

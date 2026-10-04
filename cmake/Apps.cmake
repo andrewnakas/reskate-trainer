@@ -1,14 +1,16 @@
-add_executable(dingosdk_launcher WIN32 Launcher/main.cpp Launcher/launch.cpp
-    Launcher/gui.cpp Launcher/gui_launcher.cpp Launcher/gui_renderer.cpp Launcher/gui_home.cpp
-    Launcher/gui_settings.cpp Launcher/gui_sign_in.cpp Launcher/gui_mods.cpp Launcher/gui_mods_browse.cpp
-    Launcher/updater.cpp Launcher/mod_manager.cpp Launcher/thunderstore.cpp)
-target_link_libraries(dingosdk_launcher PRIVATE dingosdk_logging dingosdk_content_cache_install dingosdk_world_layer_scan dingosdk_launcher_support dingosdk_initfs
-    dingosdk_mod_list dingosdk_json dingosdk_miniz dingosdk_imgui winhttp shell32 dwmapi windowscodecs ole32)
-set_target_properties(dingosdk_launcher PROPERTIES OUTPUT_NAME "ReSkateLauncher")
-dingosdk_version_info(dingosdk_launcher "ReSkate launcher" "ReSkateLauncher.exe" VFT_APP)
+if(WIN32)
+    add_executable(dingosdk_launcher WIN32 Launcher/main.cpp Launcher/launch.cpp
+        Launcher/gui.cpp Launcher/gui_launcher.cpp Launcher/gui_renderer.cpp Launcher/gui_home.cpp
+        Launcher/gui_settings.cpp Launcher/gui_sign_in.cpp Launcher/gui_mods.cpp Launcher/gui_mods_browse.cpp
+        Launcher/updater.cpp Launcher/mod_manager.cpp Launcher/thunderstore.cpp Launcher/problem.h)
+    target_link_libraries(dingosdk_launcher PRIVATE dingosdk_logging dingosdk_content_cache_install dingosdk_world_layer_scan dingosdk_launcher_support dingosdk_initfs
+        dingosdk_mod_list dingosdk_mods dingosdk_json dingosdk_miniz dingosdk_imgui winhttp shell32 dwmapi windowscodecs ole32)
+    set_target_properties(dingosdk_launcher PROPERTIES OUTPUT_NAME "ReSkateLauncher")
+    dingosdk_version_info(dingosdk_launcher "ReSkate launcher" "ReSkateLauncher.exe" VFT_APP)
+endif()
 
 option(DINGOSDK_BUILD_LAUNCHER_TESTS "Build launcher mod manager regression tests" OFF)
-if(DINGOSDK_BUILD_LAUNCHER_TESTS)
+if(DINGOSDK_BUILD_LAUNCHER_TESTS AND WIN32)
     enable_testing()
     add_executable(dingosdk_mod_manager_tests Launcher/Test/mod_manager_tests.cpp Launcher/mod_manager.cpp)
     target_link_libraries(dingosdk_mod_manager_tests PRIVATE dingosdk_mod_list dingosdk_launcher_support dingosdk_miniz shell32)
@@ -44,37 +46,39 @@ if(DINGOSDK_BUILD_LAUNCHER_TESTS)
     add_test(NAME mod_scoring COMMAND dingosdk_mod_scoring_tests "${DINGOSDK_TEST_GAME_ROOT}")
 endif()
 
-# Launcher fonts (OFL / Apache, licences beside them) and the background photo,
-# embedded when present. A ReSkateLauncher.background.jpg beside the exe
-# overrides the photo at runtime.
-set(launcher_fonts "${PROJECT_SOURCE_DIR}/External/fonts")
-set(launcher_resources
-    "FONT_HEADING RCDATA \"${launcher_fonts}/Montserrat-ExtraBold.ttf\"\n"
-    "FONT_BODY RCDATA \"${launcher_fonts}/Montserrat-SemiBold.ttf\"\n"
-    "FONT_BRUSH RCDATA \"${launcher_fonts}/PermanentMarker-Regular.ttf\"\n")
-set(launcher_background "${PROJECT_SOURCE_DIR}/assets/launcher/background.jpg")
-if(EXISTS "${launcher_background}")
-    list(APPEND launcher_resources "LAUNCHER_BACKGROUND RCDATA \"${launcher_background}\"\n")
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${launcher_background}")
-endif()
-# Tile icons: the skate tool on MODS, the wheel on SETTINGS.
-foreach(tile_icon mods settings)
-    set(tile_icon_path "${PROJECT_SOURCE_DIR}/assets/launcher/icon_${tile_icon}.png")
-    if(EXISTS "${tile_icon_path}")
-        string(TOUPPER "${tile_icon}" tile_icon_name)
-        list(APPEND launcher_resources "LAUNCHER_ICON_${tile_icon_name} RCDATA \"${tile_icon_path}\"\n")
-        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${tile_icon_path}")
+if(WIN32)
+    # Launcher fonts (OFL / Apache, licences beside them) and the background photo,
+    # embedded when present. A ReSkateLauncher.background.jpg beside the exe
+    # overrides the photo at runtime.
+    set(launcher_fonts "${PROJECT_SOURCE_DIR}/External/fonts")
+    set(launcher_resources
+        "FONT_HEADING RCDATA \"${launcher_fonts}/Montserrat-ExtraBold.ttf\"\n"
+        "FONT_BODY RCDATA \"${launcher_fonts}/Montserrat-SemiBold.ttf\"\n"
+        "FONT_BRUSH RCDATA \"${launcher_fonts}/PermanentMarker-Regular.ttf\"\n")
+    set(launcher_background "${PROJECT_SOURCE_DIR}/assets/launcher/background.jpg")
+    if(EXISTS "${launcher_background}")
+        list(APPEND launcher_resources "LAUNCHER_BACKGROUND RCDATA \"${launcher_background}\"\n")
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${launcher_background}")
     endif()
-endforeach()
-# Icon resource 1: the exe's icon in Explorer and the window's icon.
-set(launcher_icon "${PROJECT_SOURCE_DIR}/assets/launcher/icon.ico")
-if(EXISTS "${launcher_icon}")
-    list(PREPEND launcher_resources "1 ICON \"${launcher_icon}\"\n")
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${launcher_icon}")
+    # Tile icons: the skate tool on MODS, the wheel on SETTINGS.
+    foreach(tile_icon mods settings)
+        set(tile_icon_path "${PROJECT_SOURCE_DIR}/assets/launcher/icon_${tile_icon}.png")
+        if(EXISTS "${tile_icon_path}")
+            string(TOUPPER "${tile_icon}" tile_icon_name)
+            list(APPEND launcher_resources "LAUNCHER_ICON_${tile_icon_name} RCDATA \"${tile_icon_path}\"\n")
+            set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${tile_icon_path}")
+        endif()
+    endforeach()
+    # Icon resource 1: the exe's icon in Explorer and the window's icon.
+    set(launcher_icon "${PROJECT_SOURCE_DIR}/assets/launcher/icon.ico")
+    if(EXISTS "${launcher_icon}")
+        list(PREPEND launcher_resources "1 ICON \"${launcher_icon}\"\n")
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${launcher_icon}")
+    endif()
+    string(CONCAT launcher_resources ${launcher_resources})
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/launcher_resources.rc" "${launcher_resources}")
+    target_sources(dingosdk_launcher PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/launcher_resources.rc")
 endif()
-string(CONCAT launcher_resources ${launcher_resources})
-file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/launcher_resources.rc" "${launcher_resources}")
-target_sources(dingosdk_launcher PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/launcher_resources.rc")
 
 # Off for local builds so a deployed development DLL is never replaced by a release.
 option(DINGOSDK_LAUNCHER_AUTO_UPDATE "Let the launcher replace itself and ReSkate.dll from the launcher config" OFF)
@@ -98,23 +102,33 @@ else()
 endif()
 configure_file(cmake/templates/launcher_update_config.h.in generated/launcher_update_config.h @ONLY)
 
-# ReSkateEmotePacker: a folder of pictures and GIFs -> the chat emote pack (emotes.json +
-# emotes.png) that ReSkate.dll bakes in from assets/emotes.
-add_executable(dingosdk_emote_packer EmotePacker/main.cpp)
-target_link_libraries(dingosdk_emote_packer PRIVATE dingosdk_json windowscodecs ole32)
-set_target_properties(dingosdk_emote_packer PROPERTIES OUTPUT_NAME "ReSkateEmotePacker")
+if(WIN32)
+    # ReSkateEmotePacker: a folder of pictures and GIFs -> the chat emote pack (emotes.json +
+    # emotes.png) that ReSkate.dll bakes in from assets/emotes.
+    add_executable(dingosdk_emote_packer EmotePacker/main.cpp)
+    target_link_libraries(dingosdk_emote_packer PRIVATE dingosdk_json windowscodecs ole32)
+    set_target_properties(dingosdk_emote_packer PROPERTIES OUTPUT_NAME "ReSkateEmotePacker")
+endif()
 
 # ReSkate dedicated server: a headless session host. It runs from its own folder
 # next to steam_api64.dll and the Steam client files; no game install needed.
+# On Linux next to libsteam_api.so; self-update is disabled there (see server_update.cpp).
 add_executable(dingosdk_server Server/main.cpp Server/server_host.cpp Server/server_party.cpp
     Extension/Multiplayer/Session/party_book.cpp Server/server_config.cpp Server/steam_server.cpp
-    Server/server_update.cpp Launcher/updater.cpp
+    Server/server_update.cpp $<$<BOOL:${WIN32}>:Launcher/updater.cpp>
     Extension/Multiplayer/Steam/steam_transport.cpp Extension/Multiplayer/Net/protocol.cpp
     Extension/Multiplayer/Net/delta_codec.cpp Extension/Multiplayer/Net/wire_codec.cpp
     Extension/Multiplayer/Remote/playback_buffers.cpp Extension/Multiplayer/Session/password.cpp
     Server/server_activity.cpp Server/server_votes.cpp Extension/Throwdowns/throwdown_wire.cpp)
 target_include_directories(dingosdk_server SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/External/steam_networking")
-target_link_libraries(dingosdk_server PRIVATE dingosdk_launcher_support dingosdk_world_layer_scan dingosdk_json
-    dingosdk_lz4 dingosdk_zstd dingosdk_logging dingosdk_miniz dingosdk_word_filter winhttp bcrypt winmm)
-set_target_properties(dingosdk_server PROPERTIES OUTPUT_NAME "ReSkateServer")
-dingosdk_version_info(dingosdk_server "ReSkate dedicated server" "ReSkateServer.exe" VFT_APP)
+if(WIN32)
+    target_link_libraries(dingosdk_server PRIVATE dingosdk_launcher_support dingosdk_world_layer_scan dingosdk_json
+        dingosdk_lz4 dingosdk_zstd dingosdk_logging dingosdk_miniz dingosdk_word_filter winhttp bcrypt winmm)
+    set_target_properties(dingosdk_server PROPERTIES OUTPUT_NAME "ReSkateServer")
+    dingosdk_version_info(dingosdk_server "ReSkate dedicated server" "ReSkateServer.exe" VFT_APP)
+else()
+    find_package(OpenSSL REQUIRED)
+    target_link_libraries(dingosdk_server PRIVATE dingosdk_launcher_support dingosdk_world_layer_scan dingosdk_json
+        dingosdk_lz4 dingosdk_zstd dingosdk_miniz dingosdk_word_filter OpenSSL::Crypto dl pthread)
+    set_target_properties(dingosdk_server PROPERTIES OUTPUT_NAME "ReSkateServer")
+endif()

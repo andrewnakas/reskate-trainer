@@ -1,5 +1,6 @@
 #include "mod_merge_internal.h"
 #include "Engine/Resource/ebx_document.h"
+#include "Engine/Core/Platform/path_text.h"
 
 #include <cstring>
 #include <stdexcept>
@@ -33,7 +34,7 @@ std::vector<MergeReport::LoadScreen> read_load_screens(const std::vector<const M
                                                        const fs::path& gameRoot, MergeReport& report) {
     std::vector<MergeReport::LoadScreen> result;
     for (const auto* mod : mods) {
-        const auto modName = mod->directory.filename().string();
+        const auto modName = path_utf8(mod->directory.filename());
         for (const auto& relative : modFiles.at(mod).tocs) {
             if (lower(relative) != configurationToc) continue;
             try {

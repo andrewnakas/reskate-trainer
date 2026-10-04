@@ -1,5 +1,6 @@
 #include "mod_merge_internal.h"
 #include "Engine/Core/Json/json.h"
+#include "Engine/Core/Platform/path_text.h"
 
 #include <Windows.h>
 #include <bcrypt.h>
@@ -21,15 +22,15 @@ std::string lower(std::string_view text) {
 
 std::vector<std::byte> read_file(const fs::path& path) {
     std::ifstream input(path, std::ios::binary | std::ios::ate);
-    if (!input) throw std::runtime_error("Cannot open " + path.string());
+    if (!input) throw std::runtime_error("Cannot open " + path_utf8(path));
     const auto length = input.tellg();
     if (length < 0 || static_cast<std::uint64_t>(length) > maximumTocBytes)
-        throw std::runtime_error("File exceeds the TOC size limit: " + path.string());
+        throw std::runtime_error("File exceeds the TOC size limit: " + path_utf8(path));
     std::vector<std::byte> bytes(static_cast<std::size_t>(length));
     input.seekg(0);
     if (!bytes.empty() &&
         !input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size())))
-        throw std::runtime_error("Cannot read " + path.string());
+        throw std::runtime_error("Cannot read " + path_utf8(path));
     return bytes;
 }
 
@@ -40,12 +41,12 @@ void write_file(const fs::path& path, std::span<const std::byte> bytes) {
         std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
         if (!output || !output.write(reinterpret_cast<const char*>(bytes.data()),
                                      static_cast<std::streamsize>(bytes.size())))
-            throw std::runtime_error("Cannot write " + temporary.string());
+            throw std::runtime_error("Cannot write " + path_utf8(temporary));
     }
     if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         const auto error = GetLastError();
         DeleteFileW(temporary.c_str());
-        throw std::runtime_error("Cannot publish " + path.string() +
+        throw std::runtime_error("Cannot publish " + path_utf8(path) +
                                  " (Windows error " + std::to_string(error) + ")");
     }
 }
@@ -64,12 +65,12 @@ void unshare(const fs::path& path) {
     const auto temporary = fs::path(path.wstring() + L".unshared");
     std::error_code error;
     fs::copy_file(path, temporary, fs::copy_options::overwrite_existing, error);
-    if (error) throw std::runtime_error("Cannot give " + path.string() + " a private copy: " +
+    if (error) throw std::runtime_error("Cannot give " + path_utf8(path) + " a private copy: " +
                                         error.message());
     if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
         const auto failure = GetLastError();
         DeleteFileW(temporary.c_str());
-        throw std::runtime_error("Cannot replace the shared " + path.string() +
+        throw std::runtime_error("Cannot replace the shared " + path_utf8(path) +
                                  " (Windows error " + std::to_string(failure) + ")");
     }
 }
@@ -78,22 +79,22 @@ std::uint64_t append_file(const fs::path& from, const fs::path& to) {
     fs::create_directories(to.parent_path());
     unshare(to);
     std::ifstream input(from, std::ios::binary);
-    if (!input) throw std::runtime_error("Cannot read " + from.string());
+    if (!input) throw std::runtime_error("Cannot read " + path_utf8(from));
     // tellp() on a stream opened for append reads 0 until the first write, so
     // the block's start comes from the file itself.
     std::error_code error;
     const auto existing = fs::file_size(to, error);
     const auto start = error ? std::uint64_t{} : existing;
     std::ofstream output(to, std::ios::binary | std::ios::app);
-    if (!output) throw std::runtime_error("Cannot append to " + to.string());
+    if (!output) throw std::runtime_error("Cannot append to " + path_utf8(to));
     // A megabyte of stack is a stack overflow; the copy buffer lives on the heap.
     std::vector<char> buffer(1 << 20);
     while (input) {
         input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
         if (input.gcount() && !output.write(buffer.data(), input.gcount()))
-            throw std::runtime_error("Cannot append to " + to.string());
+            throw std::runtime_error("Cannot append to " + path_utf8(to));
     }
-    if (!output) throw std::runtime_error("Cannot append to " + to.string());
+    if (!output) throw std::runtime_error("Cannot append to " + path_utf8(to));
     return start;
 }
 
@@ -104,7 +105,7 @@ void link_or_copy(const fs::path& from, const fs::path& to) {
     fs::remove(to, error);
     if (CreateHardLinkW(to.c_str(), from.c_str(), nullptr)) return;
     fs::copy_file(from, to, fs::copy_options::overwrite_existing, error);
-    if (error) throw std::runtime_error("Cannot place " + to.string() + ": " + error.message());
+    if (error) throw std::runtime_error("Cannot place " + path_utf8(to) + ": " + error.message());
 }
 
 RelativeFiles scan(const fs::path& directory) {

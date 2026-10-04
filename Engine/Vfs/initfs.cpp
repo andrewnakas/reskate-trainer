@@ -5,6 +5,7 @@
 #include "Engine/Game/Build/supported_build.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/initfs.h"
+#include "Engine/Core/Platform/path_text.h"
 
 #include <Windows.h>
 #include <bcrypt.h>
@@ -37,13 +38,13 @@ std::string lower(std::string_view text) {
 }
 Bytes read_file(const fs::path& path, std::size_t maximum) {
     std::ifstream input(path, std::ios::binary | std::ios::ate);
-    if (!input) fail("Cannot open " + path.string());
+    if (!input) fail("Cannot open " + path_utf8(path));
     const auto length = input.tellg();
-    if (length < 0 || static_cast<std::uint64_t>(length) > maximum) fail("File exceeds size limit: " + path.string());
+    if (length < 0 || static_cast<std::uint64_t>(length) > maximum) fail("File exceeds size limit: " + path_utf8(path));
     Bytes bytes(static_cast<std::size_t>(length));
     input.seekg(0);
     if (!bytes.empty() && !input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size())))
-        fail("Cannot read " + path.string());
+        fail("Cannot read " + path_utf8(path));
     return bytes;
 }
 
@@ -128,7 +129,7 @@ void apply_archive(const fs::path& path, const Secret& key, Entries& effective, 
     auto input = read_file(path, maximum_archive);
     if (input.size() <= native_db::envelope_size ||
         std::memcmp(input.data(), native_db::magic, sizeof(native_db::magic)))
-        fail("Unrecognized native envelope in " + path.string());
+        fail("Unrecognized native envelope in " + path_utf8(path));
     const auto body = std::span<const unsigned char>(input).subspan(native_db::envelope_size);
     std::size_t consumed{};
     auto root = native_db::read(body, "InitFS", &consumed);
@@ -160,12 +161,12 @@ void apply_archive(const fs::path& path, const Secret& key, Entries& effective, 
         if (const auto* file_system = file->field("fs"); file_system &&
             (file_system->type != 7 || (!file_system->text.empty() && file_system->text != "/data")))
             fail("Unsupported InitFS filesystem destination for " + name->text);
-        Entry entry{name->text, path.string(), Bytes(payload->bytes.begin(), payload->bytes.end())};
+        Entry entry{name->text, path_utf8(path), Bytes(payload->bytes.begin(), payload->bytes.end())};
         if (!entries.emplace(lower(name->text), std::move(entry)).second) fail("Duplicate InitFS virtual path");
     }
     if (!inherit) effective.clear();
     for (auto& [name, entry] : entries) effective.insert_or_assign(name, std::move(entry));
-    sources.push_back(Json{{"path", path.string()}, {"sha256", launcher::sha256_file(path)}, {"inherit", inherit}});
+    sources.push_back(Json{{"path", path_utf8(path)}, {"sha256", launcher::sha256_file(path)}, {"inherit", inherit}});
 }
 
 bool within(const fs::path& root, const fs::path& path) {
@@ -178,7 +179,7 @@ bool within(const fs::path& root, const fs::path& path) {
 bool write_atomic(const fs::path& root, const fs::path& path, std::span<const unsigned char> bytes, bool replace) {
     if (!within(root, fs::weakly_canonical(path))) fail("Output path escapes the export directory");
     if (!replace && fs::exists(path)) {
-        if (!fs::is_regular_file(path)) fail("Output path is not a regular file: " + path.string());
+        if (!fs::is_regular_file(path)) fail("Output path is not a regular file: " + path_utf8(path));
         return false;
     }
     fs::create_directories(path.parent_path());
@@ -186,17 +187,17 @@ bool write_atomic(const fs::path& root, const fs::path& path, std::span<const un
     const auto temporary = fs::path(path.wstring() + L".reskate-" + std::to_wstring(GetCurrentProcessId()) +
         L"-" + std::to_wstring(GetTickCount64()) + L"-" + std::to_wstring(sequence.fetch_add(1)) + L".tmp");
     const auto file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file == INVALID_HANDLE_VALUE) fail("Cannot create output file: " + path.string());
+    if (file == INVALID_HANDLE_VALUE) fail("Cannot create output file: " + path_utf8(path));
     DWORD written{};
     const bool ready = WriteFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr) &&
         written == bytes.size() && FlushFileBuffers(file);
     CloseHandle(file);
-    if (!ready) { DeleteFileW(temporary.c_str()); fail("Cannot write output file: " + path.string()); }
+    if (!ready) { DeleteFileW(temporary.c_str()); fail("Cannot write output file: " + path_utf8(path)); }
     if (MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_WRITE_THROUGH | (replace ? MOVEFILE_REPLACE_EXISTING : 0))) return true;
     const auto error = GetLastError();
     DeleteFileW(temporary.c_str());
     if (!replace && (error == ERROR_ALREADY_EXISTS || error == ERROR_FILE_EXISTS) && fs::is_regular_file(path)) return false;
-    fail("Cannot publish output file: " + path.string());
+    fail("Cannot publish output file: " + path_utf8(path));
 }
 Json read_preferences(const fs::path& root) {
     const auto path = root / L"ReSkate.settings.json";

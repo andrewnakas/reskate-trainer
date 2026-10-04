@@ -5,6 +5,7 @@
 #include "Engine/Core/Platform/launcher_support.h"
 #include "launcher_update_config.h"
 #include "text_encoding.h"
+#include "Engine/Core/Platform/path_text.h"
 
 #include <winhttp.h>
 #include <miniz.h>
@@ -197,7 +198,7 @@ struct Zip {
 // Writes one ZIP entry to `output`.
 void extract_index(Zip& zip, mz_uint index, const mz_zip_archive_file_stat& entry, const fs::path& output) {
     Handle file{CreateFileW(output.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr)};
-    if (file.value == INVALID_HANDLE_VALUE) fail("Cannot create " + output.string());
+    if (file.value == INVALID_HANDLE_VALUE) fail("Cannot create " + path_utf8(output));
     struct Sink { HANDLE file; std::uint64_t count{}; } sink{file.value};
     const auto write = [](void* opaque, mz_uint64 offset, const void* buffer, size_t count) -> size_t {
         auto& target = *static_cast<Sink*>(opaque);

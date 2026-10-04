@@ -1,6 +1,8 @@
 #include "cas_codec.h"
 
+#ifdef _WIN32
 #include <Windows.h>
+#endif
 #include <algorithm>
 #include <limits>
 #include <mutex>
@@ -46,6 +48,7 @@ private:
 };
 
 // Oodle is the game's own module, so it is resolved once and never unloaded.
+#ifdef _WIN32
 HMODULE oodle(const std::filesystem::path& gameRoot) {
     static std::mutex mutex;
     static HMODULE handle{};
@@ -78,6 +81,17 @@ template <typename Function> Function oodle_function(const std::filesystem::path
     if (!address) throw std::runtime_error(std::string("Oodle export is missing: ") + name);
     return reinterpret_cast<Function>(address);
 }
+#else
+// Linux dedicated servers read pre-exported world-layers.json; Oodle blocks
+// (game CAS) need the Windows game + oo2core DLL and are unsupported here.
+[[maybe_unused]] void *oodle(const std::filesystem::path &) {
+    throw std::runtime_error("Oodle CAS data is only supported on Windows (export world-layers.json there)");
+}
+template <typename Function> Function oodle_function(const std::filesystem::path&, const char* name) {
+    (void)name;
+    throw std::runtime_error("Oodle CAS data is only supported on Windows");
+}
+#endif
 
 std::vector<std::byte> zlib_decode(std::span<const std::byte> input, std::size_t size) {
     // miniz is built without its zlib-compatible wrappers, so inflate directly.
@@ -113,6 +127,7 @@ std::vector<std::byte> zstd_decode(std::span<const std::byte> input, std::size_t
 
 std::vector<std::byte> oodle_decode(std::span<const std::byte> input, std::size_t size,
                                     const std::filesystem::path& gameRoot) {
+#ifdef _WIN32
     using Function = std::int64_t(__cdecl*)(const void*, std::int64_t, void*, std::int64_t, int, int,
                                             int, void*, std::int64_t, void*, void*, void*, std::int64_t, int);
     const auto decode = oodle_function<Function>(gameRoot, "OodleLZ_Decompress");
@@ -122,10 +137,17 @@ std::vector<std::byte> oodle_decode(std::span<const std::byte> input, std::size_
                nullptr, 0, 3) != static_cast<std::int64_t>(size))
         throw std::runtime_error("Oodle CAS block failed to decode");
     return output;
+#else
+    (void)input;
+    (void)size;
+    (void)gameRoot;
+    throw std::runtime_error("Oodle CAS data is only supported on Windows (export world-layers.json there)");
+#endif
 }
 
 std::vector<std::byte> oodle_encode(std::span<const std::byte> input, CasCompression compression,
                                     int level, const std::filesystem::path& gameRoot) {
+#ifdef _WIN32
     using Bound = std::int64_t(__cdecl*)(int, std::int64_t);
     using Compress = std::int64_t(__cdecl*)(int, const void*, std::int64_t, void*, int, void*, void*,
                                             void*, void*, std::int64_t);
@@ -146,6 +168,13 @@ std::vector<std::byte> oodle_encode(std::span<const std::byte> input, CasCompres
     if (length <= 0 || length > capacity) throw std::runtime_error("Oodle CAS compression failed");
     output.resize(static_cast<std::size_t>(length));
     return output;
+#else
+    (void)input;
+    (void)compression;
+    (void)level;
+    (void)gameRoot;
+    throw std::runtime_error("Oodle CAS data is only supported on Windows");
+#endif
 }
 
 std::vector<std::byte> read_block(Cursor& cursor, const CasDecodeOptions& options) {

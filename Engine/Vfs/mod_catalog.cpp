@@ -64,16 +64,19 @@ std::string layout_changelist(const fs::path& path) noexcept {
 }
 
 std::string sdk_identity() {
-    HMODULE self{};
-    static const int anchor = 0;
-    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            reinterpret_cast<LPCWSTR>(&anchor), &self)) return {};
-    std::array<wchar_t, 32768> path{};
-    const auto length = GetModuleFileNameW(self, path.data(), static_cast<DWORD>(path.size()));
-    if (!length || length >= path.size()) return {};
+    // ReSkate.dll beside the running executable, not whichever module holds
+    // this code: Skate.exe and ReSkateLauncher.exe both sit beside it, and
+    // both merge, so both have to arrive at the same answer or each would
+    // call the other's exclusions stale and merge everything again. Not the
+    // data root, which -dataPath can move away from the dll. An empty answer
+    // (no dll) simply retries, as it always did.
+    std::array<wchar_t, 32768> host{};
+    const auto length = GetModuleFileNameW(nullptr, host.data(), static_cast<DWORD>(host.size()));
+    if (!length || length >= host.size()) return {};
     std::error_code error;
-    const fs::path file(std::wstring(path.data(), length));
+    const auto file = fs::path(std::wstring(host.data(), length)).parent_path() / L"ReSkate.dll";
     const auto size = fs::file_size(file, error);
+    if (error) return {};
     const auto written = fs::last_write_time(file, error).time_since_epoch().count();
     return error ? std::string{} : std::to_string(size) + "-" + std::to_string(written);
 }

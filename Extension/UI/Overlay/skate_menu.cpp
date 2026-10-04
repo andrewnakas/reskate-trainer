@@ -276,11 +276,11 @@ ImFont* embedded_font(const wchar_t* name, float size, const ImWchar* ranges) {
         &config, ranges);
 }
 
-enum Page { map, world, build, skater, multiplayer, progress, mods, settings, developer, page_count };
+enum Page { map, world, build, skater, training, multiplayer, progress, mods, settings, developer, page_count };
 constexpr std::array<const char*, page_count> page_names{
-    "MAP", "WORLD", "BUILD", "SKATER", "MULTIPLAYER", "PROGRESS", "MODS", "SETTINGS", "DEVELOPER"};
+    "MAP", "WORLD", "BUILD", "SKATER", "TRAINER", "MULTIPLAYER", "PROGRESS", "MODS", "SETTINGS", "DEVELOPER"};
 constexpr std::array<const char*, page_count> page_subtitles{
-    "Pick your spot.", "Set the vibe.", "Make the park yours.", "Ride it your way.",
+    "Pick your spot.", "Set the vibe.", "Make the park yours.", "Ride it your way.", "Tune it. Drill it. Measure it.",
     "Bring your crew.", "Pick up where you want.", "Bring your own.", "Your controls, your screen.", "Under the hood."};
 }
 
@@ -366,6 +366,7 @@ void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& cal
             skate_theme::rotate_since(draw, start, -4.0f, ImVec2(at.x + extent.x * .5f, at.y + extent.y * .5f));
         }
         draw->AddText(menu.body, px(12), ImVec2(origin.x + px(18), origin.y + px(66)), muted, "YOUR SESSION. YOUR RULES.");
+        if (trainer_page_wanted()) menu.page = training;
         menu.page = std::clamp(menu.page, 0, static_cast<int>(page_count) - 1);
         // Developer (the network view) is hidden for now; offline there is no Multiplayer either.
         if (menu.page == developer || (model.steam_offline && menu.page == multiplayer)) menu.page = map;
@@ -419,6 +420,7 @@ void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& cal
         case world: world_page(menu, model, callbacks); break;
         case build: build_page(menu, model, callbacks); break;
         case skater: skater_page(menu, model, callbacks); break;
+        case training: trainer_page(menu, model, callbacks); break;
         case multiplayer: multiplayer_page(menu, model, callbacks); break;
         case progress: progression_page(menu, model, callbacks); break;
         case mods:

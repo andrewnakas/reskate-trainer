@@ -2,6 +2,7 @@
 #include "Engine/Game/Build/supported_build.h"
 
 #include "Engine/Core/Json/json.h"
+#include "Engine/Core/Platform/path_text.h"
 
 #include <Windows.h>
 
@@ -35,15 +36,15 @@ std::string lower(std::string_view text) {
 
 std::vector<unsigned char> read_file(const fs::path& path, std::size_t maximum) {
     std::ifstream input(path, std::ios::binary | std::ios::ate);
-    if (!input) throw std::runtime_error("Cannot open " + path.string());
+    if (!input) throw std::runtime_error("Cannot open " + path_utf8(path));
     const auto length = input.tellg();
     if (length < 0 || static_cast<std::uint64_t>(length) > maximum)
-        throw std::runtime_error("File exceeds size limit: " + path.string());
+        throw std::runtime_error("File exceeds size limit: " + path_utf8(path));
     std::vector<unsigned char> bytes(static_cast<std::size_t>(length));
     input.seekg(0);
     if (!bytes.empty() && !input.read(reinterpret_cast<char*>(bytes.data()),
             static_cast<std::streamsize>(bytes.size())))
-        throw std::runtime_error("Cannot read " + path.string());
+        throw std::runtime_error("Cannot read " + path_utf8(path));
     return bytes;
 }
 
@@ -420,12 +421,12 @@ void save_mod_order(const std::filesystem::path& mods_root, const std::vector<Mo
     {
         std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
         if (!output || !output.write(text.data(), static_cast<std::streamsize>(text.size())) || !output.flush())
-            throw std::runtime_error("Cannot write " + temporary.string());
+            throw std::runtime_error("Cannot write " + path_utf8(temporary));
     }
     if (!MoveFileExW(temporary.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         std::error_code ignored;
         fs::remove(temporary, ignored);
-        throw std::runtime_error("Cannot replace " + target.string() + " (Windows error " +
+        throw std::runtime_error("Cannot replace " + path_utf8(target) + " (Windows error " +
             std::to_string(GetLastError()) + ")");
     }
 }

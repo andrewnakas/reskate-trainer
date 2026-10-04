@@ -222,6 +222,7 @@ const Commands &game_commands() {
         register_park_editor_commands(*result);
         register_multiplayer_commands(*result);
         register_perf_commands(*result);
+        register_trainer_commands(*result);
         return result;
     }();
     return *registry;

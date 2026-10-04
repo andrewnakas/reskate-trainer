@@ -89,7 +89,17 @@ std::string cosmetic_ownable_message(const std::string& key, const CosmeticItemI
     cosmetic_wire_number(body, 10, owned ? 1 : 0);
     // The OwnableData decoder maps tag 0xba (field 23) to rarityId +160.
     // The ID references a separate server rarity definition; never infer one from an asset key.
-    if (metadata.contains("rarity_id")) cosmetic_wire_string(body, 23, metadata.at("rarity_id").get<std::string>());
+    if (metadata.contains("rarity_id")) {
+        cosmetic_wire_string(body, 23, metadata.at("rarity_id").get<std::string>());
+    } else if (!info.build_kit && content_cache::catalogs().available && !reserved_cosmetic(key)) {
+        // A cosmetic a mod installed is in no retail catalogue, so it has no
+        // rarity of its own and its card would show none. Collector is the
+        // game's own sixth tier, already styled and already used by 395 retail
+        // items: it reads as something apart without claiming to be Legendary.
+        // A rarity_id the mod or the profile gives still wins, and with no
+        // catalogue installed nothing is judged modded.
+        cosmetic_wire_string(body, 23, "collector");
+    }
     std::string framed;
     cosmetic_varint(framed, body.size()); framed += body;
     return framed;

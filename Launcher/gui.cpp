@@ -3,6 +3,8 @@
 #include "gui_internal.h"
 #include "gui_renderer.h"
 
+#include "Engine/Core/Log/logging.h"
+
 #include <dwmapi.h>
 #include <shellapi.h>
 
@@ -31,6 +33,93 @@ ImVec2 begin_panel(const char* id, ImVec2 size, ImVec2 panel) {
     if (!ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) ImGui::SetNextWindowFocus();
     ImGui::Begin(id, nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
     return panel;
+}
+
+ImVec2 begin_page(const char* id, ImVec2 size) {
+    ImGui::SetNextWindowPos(ImVec2(0, 0));
+    ImGui::SetNextWindowSize(size);
+    if (!ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) ImGui::SetNextWindowFocus();
+    // Opaque, and darker than a tile: a page covers the window, so the main
+    // screen must not show through, and its tiles need something to sit on.
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImGui::ColorConvertU32ToFloat4(rgba(14, 15, 18)));
+    ImGui::Begin(id, nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::PopStyleColor();
+    return size;
+}
+
+bool tile_hit(const char* id, ImVec2 position, ImVec2 size, bool enabled, bool& hovered) {
+    ImGui::SetCursorScreenPos(position);
+    ImGui::BeginDisabled(!enabled);
+    const bool pressed = ImGui::InvisibleButton(id, size);
+    hovered = enabled && ImGui::IsItemHovered();
+    ImGui::EndDisabled();
+    if (hovered) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    return pressed;
+}
+
+bool nav_tile(const Fonts& fonts, float width, const char* label, bool selected, const std::string& count,
+              bool accent, const std::string& tip) {
+    auto* draw = ImGui::GetWindowDrawList();
+    const ImVec2 position = ImGui::GetCursorScreenPos();
+    const ImVec2 size(width, S(54));
+    bool hovered{};
+    const bool pressed = tile_hit(label, position, size, true, hovered);
+    const ImVec2 end(position.x + size.x, position.y + size.y);
+    // Each tile gets its own hand-cut edge, so no two wobble the same way.
+    unsigned seed = 7;
+    for (const char* letter = label; *letter; ++letter) seed = seed * 31u + static_cast<unsigned>(*letter);
+    skate_theme::rough_rect(draw, position, end,
+        selected ? color::blue : hovered ? color::tile_grey : color::tile, seed, g_scale);
+    draw->AddText(fonts.heading, fonts.heading->FontSize,
+        ImVec2(position.x + S(16), position.y + (size.y - fonts.heading->FontSize) * 0.5f),
+        selected ? color::ink : color::text, label);
+    if (!count.empty()) {
+        const float height = fonts.caption->FontSize + S(8);
+        badge(draw, fonts, ImVec2(end.x - S(14) - badge_width(fonts, count), position.y + (size.y - height) * 0.5f),
+            count, selected ? rgba(0, 0, 0, 0.32f) : accent ? color::blue : rgba(255, 255, 255, 0.14f),
+            !selected && accent ? color::ink : color::text);
+    }
+    if (hovered && !tip.empty()) ImGui::SetTooltip("%s", tip.c_str());
+    ImGui::SetCursorScreenPos(ImVec2(position.x, end.y + S(8)));
+    return pressed;
+}
+
+float badge_width(const Fonts& fonts, const std::string& text) {
+    return fonts.caption->CalcTextSizeA(fonts.caption->FontSize, FLT_MAX, 0, text.c_str()).x + S(18);
+}
+
+void badge(ImDrawList* draw, const Fonts& fonts, ImVec2 position, const std::string& text, ImU32 fill, ImU32 ink) {
+    const float height = fonts.caption->FontSize + S(8);
+    const ImVec2 end(position.x + badge_width(fonts, text), position.y + height);
+    draw->AddRectFilled(position, end, fill, height * 0.5f);
+    draw->AddText(fonts.caption, fonts.caption->FontSize, ImVec2(position.x + S(9), position.y + S(4)), ink, text.c_str());
+}
+
+void field(const Fonts& fonts, const char* name, const std::string& value) {
+    if (value.empty()) return;
+    ImGui::PushFont(fonts.caption);
+    ImGui::TextDisabled("%s", name);
+    ImGui::PopFont();
+    ImGui::PushTextWrapPos(0);
+    ImGui::TextUnformatted(value.c_str());
+    ImGui::PopTextWrapPos();
+}
+
+bool list_row(const char* id, float width, float height, bool ticked) {
+    auto* draw = ImGui::GetWindowDrawList();
+    const ImVec2 start = ImGui::GetCursorScreenPos();
+    const ImVec2 end(start.x + width, start.y + height);
+    draw->AddRectFilled(start, end, ticked ? rgba(28, 38, 52) : rgba(31, 31, 34));
+    // The hover tint is the Selectable's; the row's own colour is under it.
+    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImGui::ColorConvertU32ToFloat4(rgba(255, 255, 255, 0.055f)));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImGui::ColorConvertU32ToFloat4(rgba(255, 255, 255, 0.09f)));
+    const bool pressed = ImGui::Selectable(id, false, ImGuiSelectableFlags_AllowOverlap, ImVec2(width, height));
+    ImGui::PopStyleColor(3);
+    if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    if (ticked) draw->AddRectFilled(start, ImVec2(start.x + S(3), end.y), color::blue);
+    draw->AddLine(ImVec2(start.x, end.y - S(1)), ImVec2(end.x, end.y - S(1)), rgba(255, 255, 255, 0.07f), S(1));
+    return pressed;
 }
 
 void open_path(const fs::path& path) {
@@ -134,6 +223,12 @@ Fonts load_fonts() {
     fonts.action = font(L"FONT_HEADING", L"seguibl.ttf", 50);
     fonts.title = font(L"FONT_BRUSH", L"seguibl.ttf", 86);
     io.FontDefault = fonts.body;
+    // Built here rather than on the first frame, so the log says whether it
+    // worked. A window with no atlas draws nothing but its clear colour.
+    const bool built = io.Fonts->Build();
+    logging::log(built ? logging::Level::info : logging::Level::error, logging::Channel::launcher,
+        "Launcher fonts: atlas {}x{} {}.", io.Fonts->TexWidth, io.Fonts->TexHeight,
+        built ? "built" : "COULD NOT BE BUILT, so the window will be empty");
     return fonts;
 }
 
@@ -167,6 +262,7 @@ void apply_style() {
     colours[ImGuiCol_HeaderHovered] = rgb(rgba(1, 131, 255, 0.35f));
     colours[ImGuiCol_HeaderActive] = rgb(rgba(1, 131, 255, 0.5f));
     colours[ImGuiCol_PopupBg] = rgb(rgba(26, 26, 26));
+    colours[ImGuiCol_ModalWindowDimBg] = rgb(rgba(4, 6, 9, 0.72f));
     colours[ImGuiCol_Separator] = rgb(color::outline);
     colours[ImGuiCol_TextSelectedBg] = rgb(rgba(1, 131, 255, 0.45f));
     colours[ImGuiCol_NavHighlight] = ImVec4(0, 0, 0, 0);
@@ -199,7 +295,17 @@ int run(const launcher_app::Session& session, const std::vector<std::wstring>& a
     using namespace detail;
     const bool com = SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED));
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    RECT work{};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
     g_scale = std::max(1.0f, static_cast<float>(GetDpiForSystem()) / 96.0f);
+    // The window cannot be resized, so the design size has to fit the screen:
+    // scale down for a small laptop, or a high DPI that would push the window
+    // past the taskbar. Fonts and the style are built from the final scale.
+    const auto work_width = static_cast<float>(work.right - work.left);
+    const auto work_height = static_cast<float>(work.bottom - work.top);
+    if (work_width > 0 && work_height > 0)
+        g_scale = std::clamp(std::min(work_width * 0.98f / design_width, work_height * 0.96f / design_height),
+            0.62f, g_scale);
 
     const auto instance = GetModuleHandleW(nullptr);
     WNDCLASSEXW window_class{sizeof(window_class)};
@@ -213,10 +319,11 @@ int run(const launcher_app::Session& session, const std::vector<std::wstring>& a
     window_class.lpszClassName = L"ReSkateLauncher";
     RegisterClassExW(&window_class);
 
-    RECT work{};
-    SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
     const int width = static_cast<int>(S(design_width));
     const int height = static_cast<int>(S(design_height));
+    logging::log(logging::Level::info, logging::Channel::launcher,
+        "Launcher window: {}x{} at scale {:.2f} (system DPI {}), work area {}x{}.", width, height, g_scale,
+        GetDpiForSystem(), work.right - work.left, work.bottom - work.top);
     const HWND window = CreateWindowExW(WS_EX_APPWINDOW, window_class.lpszClassName, L"ReSkate",
         WS_POPUP | WS_MINIMIZEBOX | WS_SYSMENU, work.left + (work.right - work.left - width) / 2,
         work.top + (work.bottom - work.top - height) / 2, width, height, nullptr, nullptr, instance, nullptr);
@@ -238,7 +345,9 @@ int run(const launcher_app::Session& session, const std::vector<std::wstring>& a
         ImGui_ImplWin32_Shutdown();
         ImGui::DestroyContext();
         DestroyWindow(window);
-        throw std::runtime_error("Cannot start Direct3D 12 for the launcher window");
+        throw std::runtime_error("This PC's graphics driver cannot draw the launcher's window. Update your "
+            "graphics driver and try again. If that does not help, the graphics card is below what ReSkate and "
+            "skate. need. The log names the card it tried to use.");
     }
     g_renderer = &renderer;
     {
@@ -280,6 +389,7 @@ int run(const launcher_app::Session& session, const std::vector<std::wstring>& a
         HANDLE game{};
         DWORD game_id{};
         bool hidden{};
+        bool drew{};
         while (running) {
             MSG message;
             while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
@@ -327,6 +437,10 @@ int run(const launcher_app::Session& session, const std::vector<std::wstring>& a
             frame(launcher, fonts, window, ui, mods_panel);
             ImGui::Render();
             renderer.render();
+            if (!drew) {
+                drew = true;
+                logging::write(logging::Level::info, logging::Channel::launcher, "Launcher drew its first frame.");
+            }
         }
         ShowWindow(window, SW_HIDE);
         if (game) CloseHandle(game);

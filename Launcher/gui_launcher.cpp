@@ -4,6 +4,7 @@
 
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Vfs/mod_catalog.h"
 
 #include <shellapi.h>
 
@@ -220,6 +221,37 @@ std::optional<std::string> Launcher::prompt(const update::Prompt& prompt) {
     return value;
 }
 
+fs::path Launcher::mods_data_root() const {
+    // The game resolves -dataPath against its own folder (engine_data_root);
+    // the same argument can be typed into Settings, so follow it here too.
+    const auto& extra = settings_.arguments;
+    const auto found = extra.find("-dataPath");
+    if (found == std::string::npos) return session_.paths.directory;
+    auto rest = std::string_view(extra).substr(found + 9);
+    if (!rest.empty() && (rest.front() == '=' || rest.front() == ' ')) rest.remove_prefix(1);
+    while (!rest.empty() && rest.front() == ' ') rest.remove_prefix(1);
+    const auto end = rest.find_first_of(" 	");
+    const auto value = rest.substr(0, end);
+    if (value.empty()) return session_.paths.directory;
+    std::error_code error;
+    const auto root = fs::weakly_canonical(session_.paths.directory / wide(value), error);
+    return error ? session_.paths.directory / wide(value) : root;
+}
+
+void Launcher::play_anyway() {
+    ignore_mod_problems_ = true;
+    play();
+}
+
+void Launcher::dismiss_mod_problems() {
+    std::lock_guard lock(mutex_);
+    if (state_.phase != Phase::mods_broken) return;
+    state_.phase = Phase::ready;
+    state_.status = "Ready to skate";
+    state_.detail = "Some mods are switched off or will not load.";
+    state_.mod_problems.clear();
+}
+
 void Launcher::set(Phase phase, std::string status, std::string detail, float progress) {
     std::lock_guard lock(mutex_);
     state_.phase = phase;
@@ -238,8 +270,8 @@ void Launcher::fail(const std::string& message) {
     logging::write(logging::Level::error, logging::Channel::launcher, message);
     std::lock_guard lock(mutex_);
     state_.phase = Phase::failed;
-    state_.status = message;
-    state_.detail = "See logs\\ReSkate.log for details.";
+    state_.status = message;   // raw: the STATUS tile explains it and can copy it
+    state_.detail.clear();
     state_.progress = -1;
     state_.qr.clear();
 }
@@ -292,11 +324,10 @@ void Launcher::run_check() {
             fail("This launcher is out of date. Download the latest ReSkate release.");
             return;
         }
-        const auto build = config->game.build_id.empty() ? config->game.manifest_id : config->game.build_id;
         if (installed) set(Phase::game_outdated, "Steam updated Skate",
-            std::format("ReSkate needs build {}. Only changed files are downloaded.", build));
+            "ReSkate needs the build below. Only the files that differ are downloaded.");
         else set(Phase::game_missing, "Skate is not installed here",
-            std::format("Install build {} from Steam (about 14 GB). Your account must own skate.", build));
+            "Download the build below from Steam, about 14 GB, with an account that owns skate.");
         return;
     }
     std::error_code error;
@@ -388,7 +419,47 @@ void Launcher::run_download(bool validate) {
     fail(std::format("The Steam download did not finish (exit code {}). {}", code, output.message));
 }
 
+// The merge the game does behind its splash, done here instead, so a mod that
+// cannot be merged is a question the launcher can ask rather than a surprise
+// three minutes into a loading screen. The game reuses what this builds.
+bool Launcher::run_mod_merge() {
+    const auto root = mods_data_root();
+    std::error_code error;
+    if (!fs::is_directory(root / mods::mods_folder, error)) return true;
+    set(Phase::merging, "Preparing mods", "Merging what is installed", 0);
+    auto catalog = mods::load_catalog(root, [this](const mods::MergeProgress& progress) {
+        set_progress(progress.step, progress.total
+            ? static_cast<float>(progress.done) / static_cast<float>(progress.total) : -1.0f);
+    });
+    for (const auto& note : catalog.notes)
+        logging::write(logging::Level::info, logging::Channel::launcher, note);
+    for (const auto& warning : catalog.warnings)
+        logging::write(logging::Level::warning, logging::Channel::launcher, warning);
+
+    std::vector<ModProblem> problems;
+    if (!catalog.issue.empty())
+        problems.push_back({{}, "The Mods folder", catalog.issue});
+    for (const auto& mod : catalog.excluded) {
+        // Mods built for another game version say so for themselves, in game
+        // and in the mod manager; they do not hold up a launch.
+        if (!mod.outdated.empty()) continue;
+        problems.push_back({mod.name, mod.title.empty() ? mod.name : mod.title,
+            mod.problems.empty() ? std::string("it could not be merged cleanly") : mod.problems.front()});
+    }
+    if (problems.empty()) return true;
+    std::lock_guard lock(mutex_);
+    state_.phase = Phase::mods_broken;
+    state_.status = problems.size() == 1 ? "A mod could not be merged"
+                                         : std::format("{} mods could not be merged", problems.size());
+    state_.detail.clear();
+    state_.progress = -1;
+    state_.mod_problems = std::move(problems);
+    return false;
+}
+
 void Launcher::run_play() {
+    if (!ignore_mod_problems_ && !run_mod_merge()) return;
+    ignore_mod_problems_ = false;
     set(Phase::launching, "Starting Skate");
     save();
     auto options = launch_options(settings_);

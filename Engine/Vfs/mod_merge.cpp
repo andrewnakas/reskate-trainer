@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <optional>
 #include <set>
@@ -98,10 +99,11 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
 
         // What the layout declares in each package directory. A free index is
         // judged against its own directory rather than every directory at once
-        // -- judged against the union, three mods exhausted the range -- and it
-        // stays at or below the highest index that directory already declares:
-        // the engine sizes each install chunk's archive table from that range,
-        // and an index past it brings the game down during startup.
+        // (judged against the union, three mods used up the gaps), lowest
+        // first, and carries on past the highest index the game declares: the
+        // engine keeps archives in a table keyed by layer, install chunk and a
+        // 16-bit index, with no range to stay inside. What it cannot survive is
+        // a reference to an archive the layout never declared.
         std::map<std::string, std::set<std::uint16_t>> declaredIn;
         for (const auto* field : {"layeredInstallChunkFiles", "unlayeredInstallChunkFiles"}) {
             const auto* node = layout.field(field);
@@ -110,16 +112,14 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
                 if (const auto* directory = store.find_directory(id)) declaredIn[*directory].insert(archive);
             });
         }
-        const auto ceiling = [&](const std::string& directory) -> std::uint16_t {
-            const auto found = declaredIn.find(directory);
-            return found == declaredIn.end() || found->second.empty() ? 0 : *found->second.rbegin();
-        };
         std::map<std::string, std::set<std::uint16_t>> claimedArchives;
         const auto claim = [&](const std::string& directory) -> std::optional<std::uint16_t> {
             const auto& declared = declaredIn[directory];
             auto& claimed = claimedArchives[directory];
-            for (std::uint16_t candidate = 1; candidate <= ceiling(directory); ++candidate)
-                if (!declared.contains(candidate) && claimed.insert(candidate).second) return candidate;
+            for (std::uint32_t candidate = 1; candidate <= std::numeric_limits<std::uint16_t>::max(); ++candidate) {
+                const auto index = static_cast<std::uint16_t>(candidate);
+                if (!declared.contains(index) && claimed.insert(index).second) return index;
+            }
             return std::nullopt;
         };
 
@@ -172,6 +172,14 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
                     const auto target = output / path.parent_path() / archive_file(manifestArchive);
                     if (!fs::exists(target, error))
                         throw std::runtime_error(mod->name + " needs a restart: the patch has no archive 1 in " + directory);
+                    // Checked before anything is appended: past 4 GB the mod's
+                    // payloads could not be addressed, and the next launch
+                    // gives it an archive of its own anyway.
+                    const auto held = fs::file_size(target, error);
+                    const auto added = error ? std::uintmax_t{} : fs::file_size(mod->directory / path, error);
+                    if (error || held + added > std::numeric_limits<std::uint32_t>::max())
+                        throw std::runtime_error(mod->name + " needs a restart: the patch's archive 1 in " + directory +
+                                                 " has no room left for it while the game runs");
                     ArchivePlacement::Spot spot{manifestArchive, append_file(mod->directory / path, target)};
                     placements[mod].at.emplace(std::pair{directory, *number}, spot);
                     report.notes.push_back(mod->name + ": " + directory + "/cas_" + std::to_string(*number) +
@@ -194,12 +202,12 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
                 auto directory = lower(path.parent_path().generic_string());
                 if (directory.starts_with("win32/")) directory.erase(0, 6);
                 // The first mod to ship an index keeps it. A later one takes a
-                // free index of its own where the base leaves one, so the file
-                // is hard linked rather than copied; failing that it is
+                // free index of its own, so the file is hard linked rather
+                // than copied and no two mods share an archive's 4 GB of
+                // addressable bytes; only with every index taken is it
                 // concatenated onto the archive it collides with.
                 auto& claimed = claimedArchives[directory];
                 ArchivePlacement::Spot spot{number, 0};
-                const auto keepable = number <= ceiling(directory) || declaredIn[directory].contains(number);
                 // Archive 1 stays the patch's own file, never a link to a mod's:
                 // a live apply appends manifests and new mods to it while the
                 // game has it open, and a linked file cannot be swapped for a
@@ -212,7 +220,7 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
                     } else {
                         spot.offset = append_file(mod->directory / path, output / path);
                     }
-                } else if (keepable && claimed.insert(number).second) {
+                } else if (claimed.insert(number).second) {
                     link_or_copy(mod->directory / path, output / path);
                 } else if (const auto free = claim(directory); free) {
                     spot.archive = *free;

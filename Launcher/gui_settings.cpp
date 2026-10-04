@@ -101,37 +101,48 @@ bool key_bindings(const Fonts& fonts, Settings& settings, Ui& ui) {
     return changed;
 }
 
-// Tab buttons styled like the launcher's buttons: the open tab is blue.
-void settings_tabs(Ui& ui) {
-    static constexpr std::array<const char*, 4> names{"GAME", "DISPLAY", "KEYS", "ADVANCED"};
-    ImGui::BeginDisabled(ui.binding != 0);
-    for (int i = 0; i < static_cast<int>(names.size()); ++i) {
-        if (i) ImGui::SameLine(0, S(6));
-        const bool selected = ui.settings_tab == i;
-        if (selected) push_primary_button();
-        if (ImGui::Button(names[static_cast<std::size_t>(i)], ImVec2(S(128), S(34)))) ui.settings_tab = i;
-        if (selected) pop_primary_button();
-    }
-    ImGui::EndDisabled();
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-}
-
 } // namespace
 
-void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui) {
+void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, HWND window) {
     bool& open = ui.settings;
-    const auto panel = begin_panel("##settings_panel", size, ImVec2(S(600), S(620)));
+    // A page, like the mod manager: the same rail, the same way out.
+    const auto frame = begin_page("##settings_panel", size);
+    auto* draw = ImGui::GetWindowDrawList();
     auto& settings = launcher.settings();
     const auto& paths = launcher.session().paths;
     const bool busy = launcher.busy();
+    const bool binding = ui.binding != 0;
 
-    panel_title(fonts, "SETTINGS");
-    settings_tabs(ui);
+    window_buttons(draw, window, frame);
+    const float rail_x = S(28), rail_width = S(236);
+    const float content_x = rail_x + rail_width + S(26);
+    const float top = S(52), bottom = frame.y - S(24);
+    const float title_size = S(44);
+    page_title(draw, fonts, ImVec2(rail_x + S(2), top - S(4)), "SETTINGS", title_size);
 
-    const float footer = ImGui::GetFrameHeight() + S(40);
-    ImGui::BeginChild("##settings_page", ImVec2(0, panel.y - ImGui::GetCursorPosY() - footer), ImGuiChildFlags_None);
+    // ------------------------------------------------ rail
+    const float rail_top = top + title_size + S(20);
+    ImGui::SetCursorPos(ImVec2(rail_x, rail_top));
+    ImGui::BeginChild("##settings_rail", ImVec2(rail_width, bottom - rail_top));
+    static constexpr std::array<const char*, 4> names{"GAME", "DISPLAY", "KEYS", "ADVANCED"};
+    ImGui::BeginDisabled(binding);
+    for (int i = 0; i < static_cast<int>(names.size()); ++i)
+        if (nav_tile(fonts, rail_width, names[static_cast<std::size_t>(i)], ui.settings_tab == i))
+            ui.settings_tab = i;
+    ImGui::SetCursorPosY(ImGui::GetWindowHeight() - S(38));
+    push_primary_button();
+    if (ImGui::Button("\xe2\x86\x90  BACK", ImVec2(-1, S(34)))) open = false;
+    pop_primary_button();
+    ImGui::EndDisabled();
+    ImGui::EndChild();
+
+    // ------------------------------------------------ the open tab
+    // Kept to a readable column: settings are sentences, not a table.
+    ImGui::SetCursorPos(ImVec2(content_x, top));
+    ImGui::BeginChild("##settings_content",
+        ImVec2(std::min(S(760), frame.x - content_x - S(28)), bottom - top));
+    const float footer = ImGui::GetTextLineHeight() + S(16);
+    ImGui::BeginChild("##settings_page", ImVec2(0, ImGui::GetWindowHeight() - footer));
     switch (ui.settings_tab) {
     case 0: {
         section_caption(fonts, "GAME FOLDER");
@@ -211,19 +222,16 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
     }
     ImGui::EndChild();
 
-    ImGui::SetCursorPosY(panel.y - S(24) - ImGui::GetFrameHeight());
-    ImGui::AlignTextToFramePadding();
+    ImGui::SetCursorPosY(ImGui::GetWindowHeight() - footer + S(8));
     ImGui::PushFont(fonts.caption);
     ImGui::TextDisabled("%s", !update::binary_updates_enabled() ? "Development build: ReSkate files are never replaced."
                               : settings.updates ? "Release build: updates install automatically."
                                                  : "Updates are off: ReSkate files are never replaced.");
     ImGui::PopFont();
-    ImGui::SameLine(panel.x - S(28) - S(110));
-    push_primary_button();
-    ImGui::BeginDisabled(ui.binding != 0);
-    if (ImGui::Button("DONE", ImVec2(S(110), 0))) open = false;
-    ImGui::EndDisabled();
-    pop_primary_button();
+    ImGui::EndChild();
+
+    if (!binding && !ImGui::IsAnyItemActive() && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) open = false;
+    g_drag_allowed = !ImGui::IsAnyItemHovered() && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId);
     ImGui::End();
     if (!open) launcher.save();
 }

@@ -1,8 +1,13 @@
 #include "launcher_support.h"
 #include "launcher_support_internal.h"
 
+#ifdef _WIN32
 #include <Windows.h>
 #include <bcrypt.h>
+#else
+#include <fstream>
+#include <openssl/sha.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -13,6 +18,7 @@
 namespace fs = std::filesystem;
 
 namespace dingosdk::launcher {
+#ifdef _WIN32
 namespace {
 using detail::fail;
 using detail::Handle;
@@ -133,34 +139,37 @@ std::string rva_string(const MappedFile& file, const ParsedPe& pe, std::uint32_t
 
 } // namespace
 
+#endif // _WIN32
+
 std::string sha256_file(const fs::path& path) {
+#ifdef _WIN32
     Handle file(CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE,
         nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr));
-    if (file.get() == INVALID_HANDLE_VALUE) fail("Cannot open file for SHA-256");
+    if (file.get() == INVALID_HANDLE_VALUE) detail::fail("Cannot open file for SHA-256");
 
     Algorithm algorithm;
     if (BCryptOpenAlgorithmProvider(&algorithm.value, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0)
-        fail("Cannot initialize SHA-256");
+        detail::fail("Cannot initialize SHA-256");
     DWORD object_size{}, result_size{};
     if (BCryptGetProperty(algorithm.value, BCRYPT_OBJECT_LENGTH,
             reinterpret_cast<PUCHAR>(&object_size), sizeof(object_size), &result_size, 0) < 0 ||
-        result_size != sizeof(object_size)) fail("Cannot query SHA-256 state size");
+        result_size != sizeof(object_size)) detail::fail("Cannot query SHA-256 state size");
     std::vector<UCHAR> object(object_size);
     Hash hash;
     if (BCryptCreateHash(algorithm.value, &hash.value, object.data(), object_size,
-            nullptr, 0, 0) < 0) fail("Cannot create SHA-256 state");
+            nullptr, 0, 0) < 0) detail::fail("Cannot create SHA-256 state");
     std::vector<UCHAR> bytes(1024 * 1024);
     for (;;) {
         DWORD count{};
         if (!ReadFile(file.get(), bytes.data(), static_cast<DWORD>(bytes.size()), &count, nullptr))
-            fail("Cannot read file for SHA-256");
+            detail::fail("Cannot read file for SHA-256");
         if (!count) break;
         if (BCryptHashData(hash.value, bytes.data(), count, 0) < 0)
-            fail("Cannot update SHA-256");
+            detail::fail("Cannot update SHA-256");
     }
     std::array<UCHAR, 32> digest{};
     if (BCryptFinishHash(hash.value, digest.data(), static_cast<ULONG>(digest.size()), 0) < 0)
-        fail("Cannot finish SHA-256");
+        detail::fail("Cannot finish SHA-256");
     constexpr char digits[] = "0123456789abcdef";
     std::string output;
     output.reserve(digest.size() * 2);
@@ -169,7 +178,37 @@ std::string sha256_file(const fs::path& path) {
         output.push_back(digits[byte & 15]);
     }
     return output;
+#else
+    std::ifstream input(path, std::ios::binary);
+    if (!input) detail::fail("Cannot open file for SHA-256");
+    SHA256_CTX context;
+    if (!SHA256_Init(&context)) detail::fail("Cannot initialize SHA-256");
+    std::vector<unsigned char> bytes(1024 * 1024);
+    for (;;) {
+        input.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        const auto count = input.gcount();
+        if (count < 0) detail::fail("Cannot read file for SHA-256");
+        if (count) {
+            if (!SHA256_Update(&context, bytes.data(), static_cast<std::size_t>(count)))
+                detail::fail("Cannot update SHA-256");
+        }
+        if (!count || input.eof()) break;
+        if (input.fail() && !input.eof()) detail::fail("Cannot read file for SHA-256");
+    }
+    std::array<unsigned char, 32> digest{};
+    if (!SHA256_Final(digest.data(), &context)) detail::fail("Cannot finish SHA-256");
+    constexpr char digits[] = "0123456789abcdef";
+    std::string output;
+    output.reserve(digest.size() * 2);
+    for (const auto byte : digest) {
+        output.push_back(digits[byte >> 4]);
+        output.push_back(digits[byte & 15]);
+    }
+    return output;
+#endif
 }
+
+#ifdef _WIN32
 
 PeFileInfo inspect_pe_file(const fs::path& path) {
     const MappedFile file(path);
@@ -205,28 +244,39 @@ std::uint32_t exported_function_rva(const fs::path& path, std::string_view expor
 void validate_game_file(const fs::path& path) {
     std::error_code error;
     const auto size = fs::file_size(path, error);
-    if (error || size != expected_game_file_size) fail("Skate.exe has the wrong file size");
+    if (error || size != expected_game_file_size) detail::fail("Skate.exe has the wrong file size");
     const auto image = inspect_pe_file(path);
     if (!image.pe64 || image.machine != IMAGE_FILE_MACHINE_AMD64 ||
         !(image.characteristics & IMAGE_FILE_EXECUTABLE_IMAGE) ||
         (image.characteristics & IMAGE_FILE_DLL) || image.image_size != expected_game_image_size)
-        fail("Skate.exe has the wrong PE image identity");
+        detail::fail("Skate.exe has the wrong PE image identity");
     if (sha256_file(path) != expected_game_sha256)
-        fail("Skate.exe SHA-256 does not match the supported build");
+        detail::fail("Skate.exe SHA-256 does not match the supported build");
 }
 
 void validate_steam_api_file(const fs::path& path) {
     std::error_code error;
     const auto size = fs::file_size(path, error);
     if (error || size != expected_steam_api_file_size)
-        fail("steam_api64.dll is not the supported original Steam library (wrong size)");
+        detail::fail("steam_api64.dll is not the supported original Steam library (wrong size)");
     const auto image = inspect_pe_file(path);
     if (!image.pe64 || image.machine != IMAGE_FILE_MACHINE_AMD64 ||
         !(image.characteristics & IMAGE_FILE_EXECUTABLE_IMAGE) ||
         !(image.characteristics & IMAGE_FILE_DLL))
-        fail("steam_api64.dll is not an x64 Windows DLL");
+        detail::fail("steam_api64.dll is not an x64 Windows DLL");
     if (sha256_file(path) != expected_steam_api_sha256)
-        fail("steam_api64.dll is not the supported original Steam library (SHA-256 mismatch)");
+        detail::fail("steam_api64.dll is not the supported original Steam library (SHA-256 mismatch)");
 }
+
+#else // _WIN32
+
+void validate_steam_api_file(const fs::path& path) {
+    // Linux uses libsteam_api.so (different size/hash than the Windows DLL).
+    // Strict pinning stays Windows-only; here just require the file to exist.
+    std::error_code error;
+    if (!fs::is_regular_file(path, error) || error) detail::fail("Steam library not found");
+}
+
+#endif // _WIN32
 
 } // namespace dingosdk::launcher

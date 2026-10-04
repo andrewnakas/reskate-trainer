@@ -5,6 +5,7 @@
 #include "Engine/Resource/ebx_merge.h"
 #include "Engine/Resource/ebx_writer.h"
 #include "Engine/Resource/shader_lookup.h"
+#include "Engine/Core/Platform/path_text.h"
 
 #include <algorithm>
 #include <map>
@@ -153,7 +154,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
         auto region = fb::read_bundle_region(bundle.region);
         const auto provider = providers.find(key);
         const auto shared = provider != providers.end() && provider->second > 1;
-        const auto modName = isBase ? std::string("base") : root.filename().string();
+        const auto modName = isBase ? std::string("base") : path_utf8(root.filename());
         // The bundle holding the live material grid is rebuilt to carry the
         // combined one, and a mod whose surfaces moved has its collision
         // renumbered; both need the asset list even where one mod ships it.
@@ -496,6 +497,19 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                         what = std::to_string(table.added) + " preset(s)";
                         if (table.conflicts)
                             what += ", " + std::to_string(table.conflicts) + " disagreed";
+                        // Mods number their presets alike, so two can share a leaf
+                        // name the table has one row for. Both are registered; say
+                        // whose name the other answers to, so an item that shows
+                        // the wrong preset can be traced to its mod.
+                        std::map<std::size_t, std::pair<std::size_t, std::string>> shadowed;
+                        for (const auto& clash : table.shadowed) {
+                            auto& [count, example] = shadowed[clash.edit];
+                            if (!count++) example = clash.path + " and " + clash.holder;
+                        }
+                        for (const auto& [index, clash] : shadowed)
+                            report.notes.push_back(path_utf8(edits[index]->root.filename()) + ": " +
+                                std::to_string(clash.first) + " preset(s) share a short name with another mod's, e.g. " +
+                                clash.second + "; they are registered by their full path only");
                     } else if (shaderTable) {
                         // Each mod aliases new material keys onto shader programs
                         // and texture sets the base already ships, so the union of

@@ -6,6 +6,7 @@
 // with the game's. Client thread only.
 #include "physics_tuning_model.h"
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -25,4 +26,20 @@ void enforce(std::uintptr_t base, std::uintptr_t entity, std::span<const std::ui
 void release(std::uintptr_t base) noexcept;
 // What enforcement is doing, for the session UI and the log; empty when off.
 std::string status();
+
+// The trainer's view of the same asset (client thread only). The game's own tuning once
+// prepare() has read it; nothing (and why, in `error`) until then.
+std::shared_ptr<const Model> game_tuning(std::string *error = nullptr);
+// The running game's values, and the asset they were read from (it changes at a level load).
+bool read_live(std::uintptr_t base, Values &out, std::uintptr_t *asset = nullptr);
+struct LiveWrite {
+    std::size_t values{}, curves{}, mismatched{};
+    bool failed{};
+    bool refreshed{}; // the local skater's cached block was found and refreshed
+};
+// Refreshes the local skater's cached copy from the asset; false when the skater has none yet.
+bool refresh_skater(std::uintptr_t base, std::uintptr_t entity) noexcept;
+// Writes `target` wherever the running game differs (fields and same-sized curves only) and
+// refreshes the local skater's cached copy when anything changed.
+LiveWrite write_live(std::uintptr_t base, std::uintptr_t entity, const Values &target) noexcept;
 } // namespace dingosdk::physics_tuning

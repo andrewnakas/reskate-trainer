@@ -61,6 +61,13 @@ struct Protection {
     Lease lease;
 };
 Protection& protection() { static auto* value = new Protection; return *value; }
+struct StateWatch {
+    std::atomic<std::uintptr_t> selector{};
+    std::atomic<std::uint64_t> until{}, changes{}, wipeouts{};
+    std::atomic<std::uint32_t> state{}, previous{};
+    std::atomic<std::int64_t> since{}, previous_ticks{}; // performance-counter ticks
+};
+StateWatch& state_watch() { static auto* value = new StateWatch; return *value; }
 
 // Recheck live local ownership at use time. A retained physics address alone
 // must never protect another skater after a respawn or level change.
@@ -189,7 +196,19 @@ std::uint32_t choose_state(std::uintptr_t selector, std::uint32_t current) {
     const bool filtered = filter_requests(selector, &Owner::selector);
     const auto next = protection().choose_original(selector, current);
     LastError error;
-    return filtered && next == wipeout_physics_state && protected_owner(selector, &Owner::selector) ? current : next;
+    const auto chosen = filtered && next == wipeout_physics_state && protected_owner(selector, &Owner::selector) ? current : next;
+    auto& w = state_watch();
+    if (selector == w.selector.load(std::memory_order_acquire) && GetTickCount64() < w.until.load(std::memory_order_acquire)) {
+        if (const auto before = w.state.exchange(chosen, std::memory_order_acq_rel); before != chosen) {
+            LARGE_INTEGER now{};
+            QueryPerformanceCounter(&now);
+            w.previous.store(before, std::memory_order_relaxed);
+            w.previous_ticks.store(now.QuadPart - w.since.exchange(now.QuadPart, std::memory_order_relaxed), std::memory_order_relaxed);
+            w.changes.fetch_add(1, std::memory_order_relaxed);
+            if (chosen == wipeout_physics_state) w.wipeouts.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    return chosen;
 }
 void skeleton_response(std::uintptr_t rig, float seconds, bool wipeout) {
     // The state post-update can raise another request after the selector ran.
@@ -371,6 +390,27 @@ void clear_no_bail() noexcept {
     AcquireSRWLockExclusive(&p.lock);
     p.lease = {};
     ReleaseSRWLockExclusive(&p.lock);
+}
+void watch_physics_state(std::uintptr_t client, std::uintptr_t entity) noexcept {
+    auto& w = state_watch();
+    Owner owner;
+    if (!protection().ready.load(std::memory_order_acquire) || !resolve(client, entity, owner)) return;
+    if (w.selector.exchange(owner.selector, std::memory_order_acq_rel) != owner.selector)
+        w.state.store(0, std::memory_order_release);
+    w.until.store(GetTickCount64() + 500, std::memory_order_release);
+}
+PhysicsStateWatch watched_physics_state() noexcept {
+    auto& w = state_watch();
+    PhysicsStateWatch result;
+    result.valid = protection().ready.load(std::memory_order_acquire) && w.selector.load(std::memory_order_acquire) &&
+        GetTickCount64() < w.until.load(std::memory_order_acquire);
+    result.state = w.state.load(std::memory_order_acquire);
+    result.previous = w.previous.load(std::memory_order_relaxed);
+    static const double frequency = [] { LARGE_INTEGER value{}; QueryPerformanceFrequency(&value); return static_cast<double>(value.QuadPart); }();
+    result.previous_seconds = static_cast<float>(static_cast<double>(w.previous_ticks.load(std::memory_order_relaxed)) / frequency);
+    result.changes = w.changes.load(std::memory_order_relaxed);
+    result.wipeouts = w.wipeouts.load(std::memory_order_relaxed);
+    return result;
 }
 void clear_no_bail_flight() noexcept {
     auto& p = protection();

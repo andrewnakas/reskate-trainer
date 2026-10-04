@@ -1,0 +1,112 @@
+name: Linux Server
+
+on:
+  push:
+    branches: [linux-server-native, main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version stamped into the binaries and the asset name (e.g. 1.0.3)
+        required: true
+        default: 0.0.0-dev
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Linux x64 Server
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake libssl-dev
+
+      - name: Set version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then echo "VERSION=${{ inputs.version }}" >> "$GITHUB_ENV"
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_ENV"
+          else echo "VERSION=0.0.0-dev" >> "$GITHUB_ENV"; fi
+
+      - name: Configure
+        run: cmake --preset linux-x64 -DDINGOSDK_BUILD_MULTIPLAYER_TESTS=ON "-DDINGOSDK_VERSION=${{ env.VERSION }}"
+
+      - name: Build server and tests
+        run: cmake --build --preset linux-release --parallel 4
+
+      - name: Run portable tests
+        run: ctest --test-dir build/linux --output-on-failure
+
+      - name: Fetch Steam libs
+        # Same split as the Windows zip's DLLs: libsteam_api.so from the
+        # Steamworks SDK redist, steamclient.so (+tier0/vstdlib) from the
+        # SteamCMD SDK Redist depot (anonymous). Valve binaries, bundled
+        # like the Windows release bundles its DLLs.
+        run: |
+          set -eux
+          mkdir -p build/steamlibs
+          # Pinned and hashed: this library is loaded into the server, and a
+          # branch name is whatever that branch holds on the day CI runs. Both
+          # values also live in contrib/setup-linux-server-libs.sh.
+          SDK_COMMIT=df2baabf574a738ef1ea90a7e89339107fc0a279
+          SDK_SHA256=eb2dd015b84177cf4f4326fe578aab375fd8931bbbd719c7492420d9777007fe
+          curl -fSL --retry 3 -o build/steamlibs/libsteam_api.so \
+            "https://raw.githubusercontent.com/rlabrecque/SteamworksSDK/$SDK_COMMIT/redistributable_bin/linux64/libsteam_api.so"
+          echo "$SDK_SHA256  build/steamlibs/libsteam_api.so" | sha256sum -c -
+          test "$(stat -c%s build/steamlibs/libsteam_api.so)" -gt 100000
+          nm -D --defined-only build/steamlibs/libsteam_api.so \
+            | grep "SteamAPI_SteamGameServerNetworkingSockets_SteamAPI_v01" > /dev/null
+          mkdir -p /tmp/steamcmd && cd /tmp/steamcmd
+          curl -fSL --retry 3 -o steamcmd.tar.gz \
+            "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz"
+          tar xzf steamcmd.tar.gz
+          ./steamcmd.sh +@sSteamCmdForcePlatformType linux +login anonymous +app_update 1007 +quit
+          cp linux64/steamclient.so linux64/libtier0_s.so linux64/libvstdlib_s.so \
+            "$GITHUB_WORKSPACE/build/steamlibs/"
+          ls -lh "$GITHUB_WORKSPACE/build/steamlibs/"
+
+      - name: Stage package
+        run: |
+          set -eux
+          package='build/package-linux'
+          mkdir -p "$package/licenses"
+          cp build/linux/ReSkateServer "$package/"
+          cp build/steamlibs/*.so "$package/"
+          cp contrib/setup-linux-server-libs.sh "$package/"
+          cp contrib/reskate-server.service "$package/"
+          cp Server/README-linux.md "$package/"
+          cp Server/README.txt "$package/README-server.txt"
+          cp LICENSE "$package/LICENSE.txt"
+          cp contrib/setup-linux-server-libs.sh "$package/"
+          cp contrib/reskate-server.service "$package/"
+          cp Server/README-linux.md "$package/"
+          cp Server/README.txt "$package/README-server.txt"
+          cp LICENSE "$package/LICENSE.txt"
+          for library in rapidjson sqlite miniz bcdec; do
+            cp "External/$library/LICENSE.txt" "$package/licenses/$library-LICENSE.txt"
+          done
+          for library in spdlog lz4 zstd steam_networking; do
+            cp "External/$library/LICENSE" "$package/licenses/$library-LICENSE.txt"
+          done
+          cp External/fonts/*-LICENSE.txt "$package/licenses/"
+          file "$package/ReSkateServer"
+
+      - name: Upload Linux server
+        uses: actions/upload-artifact@v7
+        with:
+          name: ReSkateServer-Linux-${{ env.VERSION }}
+          path: build/package-linux/
+          archive: true
+          if-no-files-found: error
+          retention-days: 30

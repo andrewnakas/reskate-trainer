@@ -1,5 +1,6 @@
 #include "launcher_support.h"
 #include "launcher_support_internal.h"
+#include "path_text.h"
 
 #include <Windows.h>
 #include <TlHelp32.h>
@@ -20,6 +21,60 @@ namespace {
 using detail::fail;
 using detail::fail_windows;
 using detail::Handle;
+
+// What is loaded into the child that Windows did not put there. One of these
+// is usually what hooked LoadLibraryW, and naming it beats telling someone to
+// go looking for "security software".
+std::string foreign_modules(HANDLE process) {
+    std::array<wchar_t, MAX_PATH> windows{};
+    const auto length = GetWindowsDirectoryW(windows.data(), static_cast<UINT>(windows.size()));
+    const std::wstring system_root(windows.data(), length && length < windows.size() ? length : 0);
+    Handle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetProcessId(process)));
+    if (snapshot.get() == INVALID_HANDLE_VALUE || !snapshot.get()) return {};
+    MODULEENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    std::wstring game_root;
+    std::string names;
+    std::size_t shown = 0;
+    for (auto more = Module32FirstW(snapshot.get(), &entry); more;
+         more = Module32NextW(snapshot.get(), &entry)) {
+        const std::wstring path(entry.szExePath);
+        // The first module is Skate.exe itself; everything beside it is the
+        // install, which is not what we are looking for.
+        if (game_root.empty()) {
+            game_root = fs::path(path).parent_path().wstring();
+            continue;
+        }
+        const auto under = [&path](const std::wstring& root) {
+            return !root.empty() && path.size() > root.size() &&
+                   _wcsnicmp(path.c_str(), root.c_str(), root.size()) == 0;
+        };
+        if (under(system_root) || under(game_root)) continue;
+        if (shown == 8) { names += ", and more"; break; }
+        names += (names.empty() ? "" : ", ") + path_utf8(fs::path(entry.szModule));
+        ++shown;
+    }
+    return names;
+}
+
+// The length of a jump written over a function's first bytes, or zero when the
+// bytes are not one of the forms a hooking engine writes. Anti-virus and
+// overlays hook by patching a jump to their own code at the entry and running
+// the original afterwards; what they do not do is replace the whole function.
+std::size_t inline_jump_length(const unsigned char* bytes, std::size_t size) {
+    const auto at = [&](std::size_t index) { return index < size ? bytes[index] : 0u; };
+    if (size >= 5 && (at(0) == 0xE9 || at(0) == 0xE8)) return 5;              // jmp/call rel32
+    if (size >= 6 && at(0) == 0x68 && at(5) == 0xC3) return 6;                // push imm32; ret
+    if (size >= 6 && at(0) == 0xFF && at(1) == 0x25) {
+        // jmp [rip+rel32]. The common form targets the eight bytes that follow.
+        const bool next = at(2) == 0 && at(3) == 0 && at(4) == 0 && at(5) == 0;
+        return next && size >= 14 ? 14 : 6;
+    }
+    if (size >= 12 && at(0) == 0x48 && at(1) == 0xB8 && at(10) == 0xFF && at(11) == 0xE0)
+        return 12;                                                            // mov rax, imm64; jmp rax
+    if (size >= 2 && at(0) == 0xEB) return 2;                                 // short jmp, as hotpatching writes
+    return 0;
+}
 
 bool executable(DWORD protection) {
     if (protection & (PAGE_GUARD | PAGE_NOACCESS)) return false;
@@ -390,7 +445,7 @@ LoaderGate prepare_loader_for_injection(HANDLE process, HANDLE primary_thread,
     }
 }
 
-std::uintptr_t validated_remote_load_library(HANDLE process) {
+std::uintptr_t validated_remote_load_library(HANDLE process, std::string* note) {
     const auto kernel32 = GetModuleHandleW(L"kernel32.dll");
     if (!kernel32) fail_windows("Cannot locate local kernel32.dll");
     const auto symbol = GetProcAddress(kernel32, "LoadLibraryW");
@@ -468,9 +523,32 @@ std::uintptr_t validated_remote_load_library(HANDLE process) {
     const auto clean = image_file_bytes(fs::path(std::wstring(provider_path, provider_length)),
         static_cast<std::uint32_t>(address - local_base), fingerprint_size, remote_base);
     const bool matches_file = clean.size() == actual.size() && std::equal(clean.begin(), clean.end(), actual.begin());
-    if (!matches_file && actual != local_bytes)
-        fail("Child LoadLibraryW entry bytes match neither Windows' kernel32 file nor this process. "
-             "Security software may be hooking new processes; try allowing ReSkateLauncher.exe and Skate.exe.");
+    // A hook that writes a jump to a per-process trampoline leaves different
+    // bytes in the launcher and in the child, so neither comparison above can
+    // match even though nothing is wrong. Accept that shape when the jump is
+    // the only difference: everything past it is still Windows' own code, and
+    // the provider image already matched by timestamp, checksum and size.
+    bool hooked_entry = false;
+    if (!matches_file && actual != local_bytes && clean.size() == actual.size()) {
+        const auto jump = inline_jump_length(actual.data(), actual.size());
+        hooked_entry = jump > 0 && jump < actual.size() &&
+            std::equal(clean.begin() + static_cast<std::ptrdiff_t>(jump), clean.end(),
+                       actual.begin() + static_cast<std::ptrdiff_t>(jump));
+    }
+    if (!matches_file && actual != local_bytes && !hooked_entry) {
+        const auto foreign = foreign_modules(process);
+        std::string message = "Skate's LoadLibraryW has been replaced, not just hooked: its entry bytes match "
+                              "neither Windows' kernel32 file nor this process, and what follows them is not "
+                              "Windows' code either.";
+        if (!foreign.empty()) message += " Loaded into Skate and not part of Windows: " + foreign + ".";
+        fail(message.c_str());
+    }
+    if (hooked_entry && note) {
+        *note = "Skate's LoadLibraryW is hooked at its entry; the rest of it is Windows' own, so ReSkate is "
+                "loading through it.";
+        if (const auto foreign = foreign_modules(process); !foreign.empty())
+            *note += " Loaded into Skate and not part of Windows: " + foreign + ".";
+    }
     return address;
 }
 

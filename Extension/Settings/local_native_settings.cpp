@@ -63,29 +63,25 @@ std::optional<dingosdk::Json> native_setting_json(const NativeSettingValue* inpu
 namespace {
 // The saved option for a native setting key, or null: one store lookup per key and profile change,
 // cached on the asking thread in a small direct-mapped table (valid until this thread's next call).
-// A hit needs the same key address, location and first 8 key bytes; the key text is read only on
-// a miss. May throw.
+// A hit needs the same key address, location and whole key text (keys can share an address and
+// their first bytes: CRAS_HasSeen...Tab), with no heap string, store lock or map walk. May throw.
 const dingosdk::Json* saved_native_option(unsigned location, const char* key) {
     const auto address = reinterpret_cast<std::uintptr_t>(key);
-    std::uint64_t prefix{};
-    (void)memory::peek(address, prefix); // a short key at the end of a page stays 0: a miss refills
-    struct Entry { std::uintptr_t key{}; unsigned location{}; std::uint64_t prefix{}, changes{}; std::optional<dingosdk::Json> value; };
+    char text[256];
+    const auto length = memory::peek_cstring(address, text, sizeof(text));
+    if (length <= 0) return nullptr;
+    const std::string_view name(text, static_cast<std::size_t>(length));
+    struct Entry { std::uintptr_t key{}; unsigned location{}; std::uint64_t changes{}; std::string name; std::optional<dingosdk::Json> value; };
     thread_local std::array<Entry, 256> cache;
     const auto changes = profile::Store::changes();
     auto& entry = cache[((address >> 3) ^ (address >> 11) ^ location) & 255];
-    if (entry.key != address || entry.location != location || entry.prefix != prefix || entry.changes != changes) {
-        char text[256];
-        const auto length = memory::peek_cstring(address, text, sizeof(text));
-        if (length <= 0) return nullptr;
-        for (std::ptrdiff_t i = 0; i < length; ++i) {
-            const auto c = static_cast<unsigned char>(text[i]);
-            if (c < 32 || c == 127) return nullptr;
-        }
+    if (entry.key != address || entry.location != location || entry.changes != changes || entry.name != name) {
+        for (const unsigned char c : name) if (c < 32 || c == 127) return nullptr;
         entry.changes = 0;
-        entry.value = local_runtime().store->native_profile_option(location, std::string_view(text, static_cast<std::size_t>(length)));
+        entry.value = local_runtime().store->native_profile_option(location, name);
+        entry.name = name;
         entry.key = address;
         entry.location = location;
-        entry.prefix = prefix;
         entry.changes = changes;
     }
     return entry.value ? &*entry.value : nullptr;

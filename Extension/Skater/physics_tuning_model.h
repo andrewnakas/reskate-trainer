@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <optional>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace dingosdk::physics_tuning {
@@ -28,6 +29,9 @@ struct Model {
     std::vector<Field> fields;                // by offset, not overlapping
     std::vector<std::uint16_t> curve_slots;   // offsets of the curve pointers, ascending
     std::vector<std::optional<Curve>> curves; // per slot: the game's own curve
+    // What the game's data calls each field and curve ("Jump.MaxHeight"), in the order of
+    // `fields` and `curve_slots`; empty where the data carries no name.
+    std::vector<std::string> field_names, curve_names;
 };
 // One copy of the asset's values: the game's, a player's, or what a guest should have.
 struct Values {

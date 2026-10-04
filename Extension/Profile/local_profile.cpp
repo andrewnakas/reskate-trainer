@@ -287,10 +287,11 @@ Store::Store(std::filesystem::path path, const std::filesystem::path& defaults) 
     if (next.extensions.contains("location_travel") && next.extensions.at("location_travel").is_object())
         for (const auto* key : {"destinations", "access_points"}) next.extensions.at("location_travel").erase(key);
     if (!database_->exists() || next != value_) commit(std::move(next));
-    store_changes.fetch_add(1, std::memory_order_release);
+    note_change();
 }
 Store::~Store() = default;
 std::uint64_t Store::changes() noexcept { return store_changes.load(std::memory_order_acquire); }
+void Store::note_change() noexcept { store_changes.fetch_add(1, std::memory_order_release); }
 Snapshot Store::snapshot() const { std::lock_guard lock(mutex_); return value_; }
 std::shared_ptr<const Snapshot> Store::shared_snapshot() const {
     std::lock_guard lock(mutex_);
@@ -458,7 +459,7 @@ void Store::commit(Snapshot next) {
     if (database_->exists()) database_->commit(std::move(tables));
     else database_->initialize(std::move(tables));
     value_ = std::move(next);
-    store_changes.fetch_add(1, std::memory_order_release);
+    note_change();
 }
 
 }

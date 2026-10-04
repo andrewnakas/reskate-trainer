@@ -237,6 +237,26 @@ bool start_mod_layers(std::uintptr_t base, std::string& error) {
             " may never finish loading. Reinstall the whole mod folder, or rebuild it with a current "
             "ReSkate Studio. Details are in ReSkate.log.");
     }
+    // A mod left out of the merge altogether loads none of its content, which
+    // is worse, and used to say so only in the log. Name those too; the
+    // outdated ones have their own notice above.
+    {
+        std::vector<const mods::Mod*> dropped;
+        for (const auto& mod : catalog.excluded)
+            if (mod.outdated.empty()) dropped.push_back(&mod);
+        if (!dropped.empty()) {
+            std::string names;
+            for (const auto* mod : dropped)
+                names += (names.empty() ? "" : ", ") + (mod->title.empty() ? mod->name : mod->title);
+            const bool one = dropped.size() == 1;
+            overlay::notify(overlay::NoticeLevel::warning,
+                one ? "A mod could not be merged"
+                    : std::to_string(dropped.size()) + " mods could not be merged",
+                names + (one ? " was" : " were") + " left out, so none of " + (one ? "its" : "their") +
+                " content is loaded. Reinstall the whole mod folder, or rebuild it with a current "
+                "ReSkate Studio. Details are in ReSkate.log.");
+        }
+    }
     // A rejected catalogue is player-authored content, not a broken contract:
     // report it and boot with the stock layers rather than failing startup.
     if (!catalog.issue.empty()) {

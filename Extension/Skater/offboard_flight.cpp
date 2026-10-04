@@ -35,6 +35,26 @@ bool offboard_flight_compatible(std::uintptr_t base) noexcept {
     }
     return true;
 }
+bool scale_offboard_up_velocity(std::uintptr_t base, std::uintptr_t core, std::uintptr_t context,
+    std::uintptr_t rig, float factor, float* before) noexcept {
+    FlightLastError error;
+    if (before) *before = 0;
+    if (!object(base) || !object(context) || !object(rig) || !std::isfinite(factor) || factor <= 0 || factor > 20 ||
+        link(core) != base + addr::no_bail::bail_core_vtable || link(core, 0x3c0) != context || link(core, 0x438) != rig) return false;
+    const auto parent = link(core, 0x3b0);
+    if (link(parent) != base + offboard_flight_vtable || link(parent, 8) != context) return false;
+    const auto active = link(parent, 0x48);
+    for (const auto& state : offboard_flight_states) {
+        if (active != parent + state.offset) continue;
+        std::array<float, 3> velocity{};
+        if (link(active) != base + state.vtable_rva || !memory::read(active + 0x10, velocity)) return false;
+        if (before) *before = velocity[1];
+        if (!std::isfinite(velocity[1]) || velocity[1] < 0.5f) return false; // not a jump (yet)
+        velocity[1] *= factor;
+        return sync_offboard_flight_velocity(base, core, context, rig, velocity);
+    }
+    return false;
+}
 bool sync_offboard_flight_velocity(std::uintptr_t base, std::uintptr_t core,
     std::uintptr_t context, std::uintptr_t rig, const std::array<float, 3>& velocity) noexcept {
     FlightLastError error;

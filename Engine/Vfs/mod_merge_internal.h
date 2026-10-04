@@ -39,14 +39,16 @@ struct RelativeFiles {
 
 RelativeFiles scan(const fs::path& directory);
 
-// Every mod's archives are concatenated into one file per index, so a patch
-// reference keeps the archive number the mod was built for and moves only by
-// the byte offset that mod's block landed at. Re-indexing was the alternative,
-// and the engine reads a mod's payloads from no index but its own.
+// Every mod is built against archive 1, so the merge moves each mod's archives
+// to indices of their own and rewrites the mod's patch references to match. A
+// placement addresses its payload with a 32-bit offset, so an archive holds at
+// most 4 GB: one index per mod archive is what keeps the merged patch from
+// having a size limit of its own.
 struct ArchivePlacement {
-    // Where a mod's archive ended up: a free index of its own when one is
-    // available, which costs nothing to place, or a byte offset inside an
-    // archive it now shares with a higher-priority mod.
+    // Where a mod's archive ended up: an index of its own, which costs nothing
+    // to place, or a byte offset inside an archive it shares. Sharing is for a
+    // mod added while the game runs, which has no declared index to take, and
+    // for a package directory with no index left.
     struct Spot {
         std::uint16_t archive{};
         std::uint64_t offset{};

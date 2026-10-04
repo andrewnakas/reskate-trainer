@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -28,6 +29,14 @@ struct MergedTable {
     std::vector<std::byte> resourceMeta;
     std::size_t added{};     // presets taken from the edits
     std::size_t conflicts{}; // presets two edits put in different bundles; the first won
+    // Presets added under their full path only, because another preset already
+    // answers to the same leaf name (cust_tops/1_ap and cust_bottoms/1_ap).
+    struct Shadowed {
+        std::size_t edit{};  // index into `edits`
+        std::string path;    // the preset left without a leaf lookup
+        std::string holder;  // the preset its leaf name finds instead
+    };
+    std::vector<Shadowed> shadowed;
 };
 
 // Throws when a copy is not a table of this kind, or an edit changes the base's

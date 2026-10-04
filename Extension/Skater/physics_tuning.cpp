@@ -298,4 +298,40 @@ void release(std::uintptr_t base) noexcept {
 }
 
 std::string status() { return state().status; }
+
+std::shared_ptr<const Model> game_tuning(std::string *error) { return model(error); }
+
+bool refresh_skater(std::uintptr_t base, std::uintptr_t entity) noexcept {
+    if (!base || !contracts_match(base)) return false;
+    const auto block = skater_block(base, entity);
+    return block && refresh(base, block);
+}
+
+bool read_live(std::uintptr_t base, Values &out, std::uintptr_t *asset_out) {
+    if (!base || !contracts_match(base)) return false;
+    const auto m = model();
+    const auto asset = live_asset(base);
+    if (!m || !asset || !read_values(asset, *m, out)) return false;
+    if (asset_out) *asset_out = asset;
+    return true;
+}
+
+LiveWrite write_live(std::uintptr_t base, std::uintptr_t entity, const Values &target) noexcept {
+    LiveWrite result;
+    try {
+        const auto m = model();
+        const auto asset = base && contracts_match(base) ? live_asset(base) : 0;
+        Values live;
+        if (!m || !asset || target.image.size() != asset_size || !read_values(asset, *m, live)) {
+            result.failed = true;
+            return result;
+        }
+        const auto written = write_values(asset, *m, live, target);
+        result = {written.values, written.curves, written.mismatched, written.failed, false};
+        if (!written.failed && (written.values || written.curves)) result.refreshed = refresh_skater(base, entity);
+    } catch (...) {
+        result.failed = true;
+    }
+    return result;
+}
 } // namespace dingosdk::physics_tuning

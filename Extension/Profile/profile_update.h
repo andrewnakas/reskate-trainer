@@ -104,6 +104,9 @@ public:
         store_.database_->patch(std::move(patch));
         ++value.revision;
         committed_ = true;
+        // Every setting, option and outfit is saved through here. Without this the settings
+        // hooks keep answering from the values they cached before the save.
+        Store::note_change();
     }
 };
 }

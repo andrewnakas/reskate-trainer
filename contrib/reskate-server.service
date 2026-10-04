@@ -1,0 +1,19 @@
+[Unit]
+Description=ReSkate dedicated server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=reskate
+WorkingDirectory=/opt/reskate-server
+ExecStart=/opt/reskate-server/ReSkateServer
+Restart=always
+RestartSec=5
+# Server uses restart_for_update internally; V1 Linux has self-update off,
+# so any non-zero exit still restarts here.
+StandardOutput=append:/opt/reskate-server/ReSkateServer.log
+StandardError=inherit
+
+[Install]
+WantedBy=multi-user.target

@@ -1,4 +1,5 @@
 #include "mod_merge_internal.h"
+#include "Engine/Core/Platform/path_text.h"
 
 #include <Windows.h>
 #include <algorithm>
@@ -30,16 +31,15 @@ fs::path from_utf8(std::string_view text) {
 
 // The module this code runs in: rebuilding the SDK can change how it merges.
 fs::path sdk_module() {
-    static const char anchor{};
-    HMODULE module{};
-    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                            reinterpret_cast<LPCWSTR>(&anchor), &module))
-        return {};
-    std::wstring name(32768, L'\0');
-    const auto length = GetModuleFileNameW(module, name.data(), static_cast<DWORD>(name.size()));
-    if (!length || length >= name.size()) return {};
-    name.resize(length);
-    return name;
+    // ReSkate.dll beside the running executable, never the module this code
+    // happens to live in. Skate.exe and ReSkateLauncher.exe sit beside it and
+    // both merge; naming different files would mean neither ever reuses the
+    // other's merge, and the work would be done twice on every launch.
+    std::wstring host(32768, wchar_t{});
+    const auto length = GetModuleFileNameW(nullptr, host.data(), static_cast<DWORD>(host.size()));
+    if (!length || length >= host.size()) return {};
+    host.resize(length);
+    return fs::path(host).parent_path() / L"ReSkate.dll";
 }
 
 } // namespace
@@ -70,7 +70,7 @@ std::string merge_fingerprint(const Catalog& catalog, const std::vector<const Mo
             if (it->is_regular_file(error) && !error) files.push_back(it->path());
             error.clear();
         }
-        if (error) throw std::runtime_error("Cannot list " + mod->directory.string());
+        if (error) throw std::runtime_error("Cannot list " + path_utf8(mod->directory));
         std::ranges::sort(files);
         for (const auto& file : files)
             describe(utf8(fs::relative(file, mod->directory, error)), file);
@@ -152,10 +152,10 @@ void write_stamp(const fs::path& output, const std::string& fingerprint, const M
     for (fs::recursive_directory_iterator it(output, error), end; it != end && !error; it.increment(error)) {
         if (!it->is_regular_file(error) || error) { error.clear(); continue; }
         const auto size = fs::file_size(it->path(), error);
-        if (error) throw std::runtime_error("Cannot size " + it->path().string());
+        if (error) throw std::runtime_error("Cannot size " + path_utf8(it->path()));
         text += "file " + std::to_string(size) + ' ' + utf8(fs::relative(it->path(), output, error)) + '\n';
     }
-    if (error) throw std::runtime_error("Cannot list " + output.string());
+    if (error) throw std::runtime_error("Cannot list " + path_utf8(output));
     for (auto note : report.notes) {
         std::ranges::replace(note, '\n', ' ');
         std::ranges::replace(note, '\r', ' ');

@@ -21,7 +21,8 @@ int main(int argc, char** argv) {
     const std::filesystem::path root = argv[1];
     const auto catalog = world_layer_scan::scan(root);
     check(catalog.anchors.size() == 6, "one anchor per map");
-    check(catalog.nodes.size() >= 200 && catalog.layers.size() == catalog.nodes.size(), "one row per layer");
+    check(catalog.nodes.size() >= 200 && catalog.layers.size() < catalog.nodes.size() &&
+        catalog.layers.size() + 8 > catalog.nodes.size(), "a row per layer but the essential ones");
     for (std::size_t i = 0; i < catalog.nodes.size(); ++i) {
         const auto parent = catalog.nodes[i].parent;
         check(parent >= -1 && parent < static_cast<int>(i), "parents come first");
@@ -31,6 +32,16 @@ int main(int argc, char** argv) {
     };
     for (const auto* key : {"bam_tod_1_morning", "bam_tod_7_weathernight", "grom_tod_5_night", "bam_debug_tests"})
         check(has(key), key);
+    // No row for what every map is built out of: a player cannot switch off
+    // the world and then wonder which row did it.
+    check(std::none_of(catalog.layers.begin(), catalog.layers.end(), [](const WorldLayer& layer) {
+        return layer.key.find("coregameassets") != std::string::npos;
+    }), "CoreGameAssets has no row to switch");
+    check(std::any_of(catalog.nodes.begin(), catalog.nodes.end(), [](const WorldLayerNode& node) {
+        std::string bundle = node.bundle;
+        std::transform(bundle.begin(), bundle.end(), bundle.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return bundle.find("coregameassets") != std::string::npos;
+    }), "but it keeps its node, so its children are still reachable");
     check(std::none_of(catalog.nodes.begin(), catalog.nodes.end(), [](const WorldLayerNode& node) {
         std::string bundle = node.bundle;
         std::transform(bundle.begin(), bundle.end(), bundle.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
