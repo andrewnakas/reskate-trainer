@@ -213,16 +213,17 @@ std::string start(State &s) {
     return "Showing a QR code for " + url;
 }
 
-// What applying the kept scan to the skater does. Finding the skater's skin, hair and face
-// parameters is the job of `face dump`; until those are known this says what will change.
+// What applying the kept scan to the skater does: the face texture as scanned, and for skin tone,
+// hair and facial hair the game's own option closest to what the phone saw (stock items, so other
+// players see them too). Finding those options and the face texture is the job of `face dump`;
+// until they are known this says what will change.
 std::string apply(State &s) {
     if (!s.view.saved) return "No scan saved yet.";
     if (!s.view.enabled) return "Off: the skater shows their own look.";
-    return std::format("Skin {}, hair {}{}{}{}: waiting for the skater's skin and hair parameters (run face dump and send the file).",
-                       s.view.scan.skin, s.view.scan.hair,
+    return std::format("Face{}, skin tone nearest {}, hair nearest {}{}{}: waiting for the game's skin and hair options (run face dump and send the file).",
+                       s.view.scan.face ? "" : " (none sent)", s.view.scan.skin, s.view.scan.hair,
                        s.view.scan.hair_style.empty() ? "" : ", " + s.view.scan.hair_style,
-                       s.view.scan.facial_hair.empty() ? "" : ", " + s.view.scan.facial_hair,
-                       s.view.scan.face ? ", face texture" : "");
+                       s.view.scan.facial_hair.empty() ? "" : ", " + s.view.scan.facial_hair);
 }
 } // namespace
 
