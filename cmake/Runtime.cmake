@@ -116,6 +116,9 @@ add_library(dingosdk_runtime SHARED
     Extension/Trainer/trainer_classes.cpp
     Extension/Trainer/trainer_commands.cpp
     Extension/Trainer/trainer_session.cpp
+    Extension/FaceScan/face_scan.cpp
+    Extension/FaceScan/face_dump.cpp
+    Extension/FaceScan/face_commands.cpp
     Extension/Skater/offboard_flight.cpp
     Extension/Skater/camera_observer.cpp
     Extension/Boot/offline_boot.cpp
