@@ -52,6 +52,8 @@ void map_page(SkateMenu&, const Model&, const CallbacksV3&);
 void world_page(SkateMenu&, const Model&, const CallbacksV3&);
 void build_page(SkateMenu&, const Model&, const CallbacksV3&);
 void skater_page(SkateMenu&, const Model&, const CallbacksV3&);
+// Extension/FaceScan/face_scan_page.cpp: SKATER > FACE SCAN.
+void face_scan_page(SkateMenu&, const Model&, const CallbacksV3&);
 void settings_page(SkateMenu&, const Model&, const CallbacksV3&);
 // Settings > Post FX (skate_menu_world.cpp).
 void graphics_page(SkateMenu&, const Model&, const CallbacksV3&);

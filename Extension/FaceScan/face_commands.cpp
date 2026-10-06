@@ -8,6 +8,11 @@ void register_face_commands(Commands &registry) {
         const char *name, *description, *usage;
     };
     const Verb verbs[]{
+        {"scan", "Show a QR code to scan your face with your phone (skatemods.com/face)", nullptr},
+        {"cancel", "Stop waiting for the phone", nullptr},
+        {"on", "Apply the saved scan to your skater", nullptr},
+        {"off", "Show your skater's own look again", nullptr},
+        {"forget", "Delete the saved scan", nullptr},
         {"status", "What the face scan is doing", nullptr},
         {"dump", "Write the skater's slots, recipe and material parameters to a file (discovery)", "[raw]"},
     };

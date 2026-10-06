@@ -190,7 +190,7 @@ target_link_libraries(dingosdk_runtime PRIVATE dingosdk_custom_level_manifest)
 set_target_properties(dingosdk_runtime PROPERTIES OUTPUT_NAME "ReSkate" PREFIX "")
 dingosdk_version_info(dingosdk_runtime "ReSkate mod runtime" "ReSkate.dll" VFT_DLL)
 target_include_directories(dingosdk_runtime SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/External/steam_networking")
-target_link_libraries(dingosdk_runtime PRIVATE dingosdk_lz4 dingosdk_zstd)
+target_link_libraries(dingosdk_runtime PRIVATE dingosdk_lz4 dingosdk_zstd dingosdk_qrcodegen)
 
 # Menu fonts shared with the launcher (licences in External/fonts).
 set(dingosdk_menu_fonts "${PROJECT_SOURCE_DIR}/External/fonts")

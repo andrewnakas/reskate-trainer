@@ -49,7 +49,7 @@ jobs:
           Copy-Item -LiteralPath 'build/vs2022-x64/Release/ReSkate.dll' -Destination $symbols
           Copy-Item -LiteralPath 'build/vs2022-x64/Release/ReSkateLauncher.exe' -Destination $symbols
           Copy-Item -LiteralPath 'LICENSE' -Destination "$package/LICENSE.txt"
-          foreach ($library in @('imgui', 'detours', 'rapidjson', 'sqlite', 'miniz', 'bcdec')) {
+          foreach ($library in @('imgui', 'detours', 'rapidjson', 'sqlite', 'miniz', 'bcdec', 'qrcodegen')) {
             Copy-Item -LiteralPath "External/$library/LICENSE.txt" -Destination "$package/licenses/$library-LICENSE.txt"
           }
           foreach ($library in @('spdlog', 'lz4', 'zstd', 'steam_networking')) {
