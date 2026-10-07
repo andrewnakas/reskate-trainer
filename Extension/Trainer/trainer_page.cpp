@@ -1,5 +1,8 @@
 #include "trainer_page.h"
 #include "trainer.h"
+#include "trainer_feel.h"
+#include "trainer_widgets.h"
+#include <imgui_internal.h>
 #include "Extension/UI/Overlay/skate_menu_internal.h"
 #include "Extension/UI/skate_theme.h"
 #include <algorithm>
@@ -15,9 +18,13 @@
 namespace dingosdk::overlay::menu {
 namespace {
 struct Page {
-    int tab{}; // opens on TUNE: the dials and switches
+    int tab{}, tools_tab{}; // Feel, Settings, Presets, Fun, Tools
+    float difficulty{};
+    bool confirm_reset{}, confirm_tricks{};
+    int restrictions{};
+    std::string confirm_delete, confirm_save, review_preset, map;
     std::array<char, 96> search{};
-    int mode{1}; // the Tune tab: 0 Realistic, 1 Fun (two short lists), 3 Tricklining, 2 Everything
+    int mode{2}; // retained value-list filter: 2 is every group
     int group{1}; // Everything: 1: every group, 2..: one of the view's groups
     bool only_changed{}, graph_points{}, show_unused{};
     std::size_t hidden_unused{}; // rows the filters would show but for "no use found"
@@ -31,15 +38,13 @@ struct Page {
     std::array<char, 49> preset_name{};
     std::array<float, 3> teleport{};
     double speed_edit{-1}, speed_until{};
-    float hippy_edit{1}, nocomply_edit{1}, boneless_edit{1}, offboard_edit{1}, flip_edit{1}, pump_edit{1};
-    std::array<float, trainer::flip_tricks.size()> trick_edit{}; // the speed of each flip trick
-    std::array<bool, trainer::flip_tricks.size()> trick_editing{};
+    float hippy_edit{1}, nocomply_edit{1}, boneless_edit{1}, offboard_edit{1}, flip_edit{1};
     float revert_edit{};
     bool revert_editing{};
     // The Tricklining list: rows of the value table per group, for one snapshot.
     std::array<std::vector<std::size_t>, 5> trick_rows;
     std::uint64_t trick_revision{~0ull};
-    bool hippy_editing{}, nocomply_editing{}, boneless_editing{}, offboard_editing{}, flip_editing{}, pump_editing{};
+    bool hippy_editing{}, nocomply_editing{}, boneless_editing{}, offboard_editing{}, flip_editing{};
     std::uint64_t open_serial{}; // the last `trainer open` acted on
     std::uint64_t share_serial{}; // the last `preset export` put on the clipboard
     bool share_seen{};
@@ -65,7 +70,7 @@ void wrapped_tooltip(const char *format, ...) {
 }
 // What the control just drawn does, shown while the pointer (or the controller's focus) is on it.
 void tip(const char *text) {
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) wrapped_tooltip("%s", text);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) || (ImGui::IsItemFocused() && GImGui->NavCursorVisible)) wrapped_tooltip("%s", text);
 }
 std::string lower(std::string_view text) {
     std::string result(text);
@@ -82,7 +87,8 @@ bool contains_words(const std::string &haystack, const std::string &words) {
     }
     return true;
 }
-std::string number(double value) { return std::format("{:.6g}", value); }
+std::string display_number(double value) { return std::format("{:.6g}", value); }
+std::string number(double value) { return trainer::workshop::number_token(value).value_or("nan"); }
 void trainer_command(SkateMenu &menu, const CallbacksV3 &callbacks, const std::string &text) {
     send_console(menu, callbacks, "trainer " + text);
 }
@@ -125,57 +131,71 @@ void value_row(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, const tra
                bool with_group, bool friendly) {
     ImGui::PushID(row.id.c_str());
     bool frozen = row.frozen;
+    ImGui::BeginDisabled(!callbacks.queue_console_command);
     if (ImGui::Checkbox("##freeze", &frozen)) trainer_command(menu, callbacks, std::format("freeze {} {}", row.id, frozen ? 1 : 0));
-    if (ImGui::IsItemHovered()) wrapped_tooltip("Lock: presets and Reset values leave this value alone.\nReset everything (top of the page) clears locks too.\nYou do not need it for a change to apply.");
-    ImGui::SameLine();
-    const float column = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x * 0.52f;
+    tip("Lock this value against presets, feel changes and resets. Linked child values inherit the lock.");
+    ImGui::EndDisabled(); ImGui::SameLine();
     const auto label = friendly && !row.friendly.empty() ? row.friendly : with_group ? row.group + " / " + row.label : row.label;
-    const bool tinted = row.touched || !row.used;
-    if (tinted) ImGui::PushStyleColor(ImGuiCol_Text, row.used ? skate_theme::blue : IM_COL32(150, 150, 150, 255));
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(row.used ? label.c_str() : (label + "  (no use found)").c_str());
-    if (tinted) ImGui::PopStyleColor();
-    if (ImGui::IsItemHovered())
-        wrapped_tooltip("%s%s%s\nStock: %s%s", row.help.c_str(), row.help.empty() ? "" : "\n", row.id.c_str(), number(row.stock).c_str(),
-            row.used ? "" : "\nThe game was not found (or seen) reading this value, so changing it may do nothing.");
-    ImGui::SameLine(column);
-    const float reset = ImGui::CalcTextSize("Reset").x + ImGui::GetStyle().FramePadding.x * 2;
+    const auto at = ImGui::GetCursorScreenPos();
+    const auto width = ImGui::GetContentRegionAvail().x;
+    const auto height = ImGui::GetFrameHeight();
+    ImGui::RenderTextEllipsis(ImGui::GetWindowDrawList(), ImVec2(at.x, at.y + ImGui::GetStyle().FramePadding.y),
+        ImVec2(at.x + width, at.y + height), at.x + width, at.x + width, label.c_str(), nullptr, nullptr);
+    ImGui::Dummy(ImVec2(width, height));
+    tip(std::format("{}\n{}\n{}", label, row.id, row.help).c_str());
     ImGui::BeginDisabled(!view.editable || !callbacks.queue_console_command);
     double value = p.active == row.id ? p.active_value : row.value;
-    bool edited = false;
+    bool finished{};
     if (row.kind == trainer::Kind::flag) {
         bool on = value != 0;
-        if (ImGui::Checkbox("##value", &on)) {
-            value = on ? 1 : 0;
-            edited = true;
-        }
+        if (ImGui::Checkbox("Enabled", &on)) { value = on ? 1 : 0; finished = true; }
     } else {
-        ImGui::SetNextItemWidth(std::max(px(90), ImGui::GetContentRegionAvail().x - reset - ImGui::GetStyle().ItemSpacing.x));
+        ImGui::SetNextItemWidth(-FLT_MIN);
         const bool scale = row.kind == trainer::Kind::curve || row.kind == trainer::Kind::graph;
         const bool whole = row.kind == trainer::Kind::integer;
-        const double low = scale ? -1.0e9 : -1.0e12, high = scale ? 1.0e9 : 1.0e12; // none of the trainer's own
-        const auto speed = whole ? 0.1f : scale ? 0.01f
-            : static_cast<float>(std::max({std::abs(row.stock), std::abs(value), 0.01}) * 0.004);
-        edited = ImGui::DragScalar("##value", ImGuiDataType_Double, &value, speed, &low, &high, whole ? "%.0f" : scale ? "x %.2f" : "%.4g",
-            ImGuiSliderFlags_AlwaysClamp);
-        if (ImGui::IsItemActive()) {
-            p.active = row.id;
-            p.active_value = value;
-        } else if (p.active == row.id) {
-            p.active.clear();
+        const double low = scale ? -1e9 : -1e12, high = scale ? 1e9 : 1e12;
+        const auto speed = whole ? .1f : static_cast<float>(std::max({std::abs(row.stock), std::abs(value), .01}) * .004);
+        const auto input = scalar_input("##value", whole ? "%.0f" : scale ? "%.3fx" : "%.6g");
+        if (ImGui::DragScalar("##value", ImGuiDataType_Double, &value, speed, &low, &high, input.format, ImGuiSliderFlags_AlwaysClamp)) {
+            p.active = row.id; p.active_value = value;
         }
+        keep_scalar_visible();
+        if (input.cancelled) p.active.clear();
+        else if (ImGui::IsItemDeactivatedAfterEdit() && p.active == row.id) { finished = true; p.active.clear(); }
+        tip("Drag to edit. Ctrl-click or double-click to type precisely. Enter commits; Escape cancels. Changes apply when editing finishes.");
     }
-    if (!ImGui::IsItemActive())
-        tip(row.kind == trainer::Kind::flag ? "Tick to switch this on, untick to switch it off."
-                                            : "Drag left or right to change it, or double-click to type a number. Blue means changed from the game's own.");
-    if (edited) trainer_command(menu, callbacks, std::format("set {} {}", row.id, number(value)));
-    if (row.touched && row.kind != trainer::Kind::flag) {
-        ImGui::SameLine();
-        if (ImGui::Button("Reset", ImVec2(reset, 0))) trainer_command(menu, callbacks, "reset " + row.id);
-        tip("Puts this one value back to the game's own.");
+    if (finished) trainer_command(menu, callbacks, "set " + row.id + " " + number(value));
+    ImGui::BeginDisabled(!row.touched || row.preset_locked || row.frozen);
+    if (ImGui::Button("Reset")) { trainer_command(menu, callbacks, "reset " + row.id); p.active.clear(); }
+    ImGui::EndDisabled(); ImGui::EndDisabled();
+    ImGui::SameLine();
+    const auto status = std::format("Stock {}{}{}", display_number(row.stock), row.touched ? " / Changed" : "", (row.frozen || row.preset_locked) ? " / Locked" : !row.used ? " / Unverified" : "");
+    const auto status_at = ImGui::GetCursorScreenPos(); const auto status_width = ImGui::GetContentRegionAvail().x;
+    ImGui::RenderTextEllipsis(ImGui::GetWindowDrawList(), ImVec2(status_at.x, status_at.y + ImGui::GetStyle().FramePadding.y),
+        ImVec2(status_at.x + status_width, status_at.y + height), status_at.x + status_width, status_at.x + status_width, status.c_str(), nullptr, nullptr);
+    ImGui::Dummy(ImVec2(status_width, height)); tip(status.c_str());
+    ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing(); ImGui::PopID();
+}
+
+void dial_row(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, const trainer::PresetRow &preset) {
+    ImGui::PushID(preset.name.c_str());
+    ImGui::Spacing(); ImGui::TextWrapped("%s", preset.title.c_str());
+    const auto id = "dial:" + preset.name;
+    double value = p.active == id ? p.active_value : preset.factor;
+    const double low = .1, high = std::max(5.0, preset.factor);
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    const auto input = scalar_input("##dial", "%.2fx stock");
+    if (ImGui::SliderScalar("##dial", ImGuiDataType_Double, &value, &low, &high, input.format,
+            ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp)) { p.active = id; p.active_value = value; }
+    keep_scalar_visible();
+    if (input.cancelled) p.active.clear();
+    else if (ImGui::IsItemDeactivatedAfterEdit() && p.active == id) {
+        trainer_command(menu, callbacks, "dial " + number(value) + " " + preset.name); p.active.clear();
     }
-    ImGui::EndDisabled();
-    ImGui::PopID();
+    tip(std::format("{}\n1x is stock. Ctrl-click to type an exact multiplier; Escape cancels. Preset shortcuts are in Fun.", preset.note).c_str());
+    ImGui::BeginDisabled(std::abs(preset.factor - 1) < 1e-6);
+    if (ImGui::Button("Restore stock")) { trainer_command(menu, callbacks, "dial 1 " + preset.name); p.active.clear(); }
+    ImGui::EndDisabled(); ImGui::Spacing(); ImGui::PopID();
 }
 
 // A built-in preset as a switch: blue while every value it sets holds what it sets.
@@ -186,393 +206,450 @@ void preset_switch(SkateMenu &menu, const CallbacksV3 &callbacks, const trainer:
     if (pressed) trainer_command(menu, callbacks, std::string(preset.active ? "preset remove " : "preset apply ") + preset.name);
     if (ImGui::IsItemHovered() && !preset.note.empty()) wrapped_tooltip("%s", preset.note.c_str());
 }
-// A built-in preset as a dial: one multiplier that moves everything the preset moves.
-void dial_row(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, const trainer::PresetRow &preset) {
-    ImGui::PushID(preset.name.c_str());
-    const float column = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x * 0.40f;
-    const bool moved = std::abs(preset.factor - 1.0) > 1e-4;
-    if (moved) ImGui::PushStyleColor(ImGuiCol_Text, skate_theme::blue);
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(preset.title.c_str());
-    if (moved) ImGui::PopStyleColor();
-    if (ImGui::IsItemHovered())
-        wrapped_tooltip("%s\n1 is the game's own; \"%s\" is x %s.", preset.note.c_str(), preset.name.c_str(), number(preset.amount).c_str());
-    ImGui::SameLine(column);
-    const float button = ImGui::CalcTextSize("Easy Body Flips  ").x + ImGui::GetStyle().FramePadding.x * 2;
-    const float reset = ImGui::CalcTextSize("Reset").x + ImGui::GetStyle().FramePadding.x * 2;
-    const auto id = "dial:" + preset.name;
-    double value = p.active == id ? p.active_value : preset.factor;
-    // A preset that turns its value down gets a dial with more room below 1.
-    const double low = preset.amount < 1 ? 0.05 : 0.2, high = preset.amount < 1 ? 3.0 : 10.0;
-    const float box = px(64);
-    ImGui::SetNextItemWidth(std::max(px(70), ImGui::GetContentRegionAvail().x - box - button - reset - ImGui::GetStyle().ItemSpacing.x * 3));
-    if (ImGui::SliderScalar("##dial", ImGuiDataType_Double, &value, &low, &high, "x %.2f", ImGuiSliderFlags_Logarithmic) && value > 0)
-        trainer_command(menu, callbacks, std::format("dial {} {}", number(value), preset.name));
-    if (ImGui::IsItemActive()) {
-        p.active = id;
-        p.active_value = value;
-    } else if (p.active == id) {
+// Native workshop layout, sharing the trainer's authoritative state and commands.
+void workshop_heading(SkateMenu &menu, const char *title, const char *help = nullptr) {
+    ImGui::Spacing(); ImGui::PushFont(menu.bold); ImGui::TextUnformatted(title); ImGui::PopFont();
+    if (help) note(help);
+    ImGui::Spacing();
+}
+void workshop_navigation(SkateMenu &menu, int &selected, std::initializer_list<const char *> labels, const char *id) {
+    ImGui::PushID(id);
+    const int columns = ImGui::GetContentRegionAvail().x >= px(520) ? static_cast<int>(labels.size()) : std::min(3, static_cast<int>(labels.size()));
+    const float width = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x * (columns - 1)) / columns;
+    for (int i = 0; i < static_cast<int>(labels.size()); ++i) {
+        if (i % columns) ImGui::SameLine();
+        const bool active = selected == i;
+        if (active) skate_theme::push_primary_button();
+        if (ImGui::Button(labels.begin()[i], ImVec2(width, px(36)))) {
+            selected = i; menu.feedback.clear();
+        }
+        if (active) skate_theme::pop_primary_button();
+    }
+    ImGui::PopID(); ImGui::Spacing();
+}
+// Script controls use the same full-width, precise editors as the Feel dials.
+void command_slider(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, const trainer::View &view,
+                    const char *label, const char *id, std::string_view command, float current, float low, float high,
+                    const char *help, const char *format = "%.2fx", bool enabled = true) {
+    ImGui::PushID(id);
+    ImGui::Spacing(); ImGui::TextWrapped("%s", label); tip(help);
+    const std::string key = std::string("option:") + id;
+    float value = p.active == key ? static_cast<float>(p.active_value) : current;
+    const bool editable = enabled && view.editable && !view.session_enforced && !view.boosts_blocked && callbacks.queue_console_command;
+    ImGui::BeginDisabled(!editable);
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    const auto input = scalar_input("##option", format, "%.9g");
+    if (ImGui::SliderFloat("##option", &value, low, high, input.format,
+            high > 10 && low > 0 ? ImGuiSliderFlags_Logarithmic : 0)) {
+        p.active = key; p.active_value = value;
+    }
+    keep_scalar_visible();
+    if (input.cancelled || !editable) { if (p.active == key) p.active.clear(); }
+    else if (ImGui::IsItemDeactivatedAfterEdit() && p.active == key) {
+        if (std::isfinite(value)) trainer_command(menu, callbacks, std::string(command) + " " + number(value));
+        else feedback(menu, "Enter a finite number.");
         p.active.clear();
     }
-    if (!ImGui::IsItemActive() && ImGui::IsItemHovered()) wrapped_tooltip("%s 1 is the game's own.", preset.note.c_str());
-    ImGui::SameLine();
-    // Any number at all: the slider only covers the sensible range.
-    double typed = preset.factor;
-    ImGui::SetNextItemWidth(box);
-    if (ImGui::InputDouble("##typed", &typed, 0, 0, "%.6g", ImGuiInputTextFlags_EnterReturnsTrue) && typed > 0)
-        trainer_command(menu, callbacks, std::format("dial {} {}", number(typed), preset.name));
-    if (ImGui::IsItemHovered()) wrapped_tooltip("Type any multiplier and press Enter: the slider's ends are not a limit.");
-    ImGui::SameLine();
-    if (preset.active) ImGui::PushStyleColor(ImGuiCol_Button, skate_theme::blue);
-    const bool pressed = ImGui::Button(preset.name.c_str(), ImVec2(button, 0));
-    if (preset.active) ImGui::PopStyleColor();
-    if (pressed) trainer_command(menu, callbacks, std::string(preset.active ? "preset remove " : "preset apply ") + preset.name);
-    if (ImGui::IsItemHovered()) wrapped_tooltip("%s", preset.note.c_str());
-    if (moved) {
-        ImGui::SameLine();
-        if (ImGui::Button("Reset", ImVec2(reset, 0))) trainer_command(menu, callbacks, "dial 1 " + preset.name);
-        tip("Puts this dial back to 1, the game's own.");
+    tip(help); ImGui::EndDisabled(); ImGui::PopID();
+}
+void option_slider(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, const trainer::View &view,
+                   const char *label, const char *option, float current, float low, float high,
+                   const char *help, const char *format = "%.2fx", bool enabled = true) {
+    command_slider(menu, callbacks, p, view, label, option, std::string("option ") + option,
+                   current, low, high, help, format, enabled);
+}
+void workshop_flips(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, const trainer::View &view) {
+    const bool editable = view.editable && !view.session_enforced && !view.boosts_blocked && callbacks.queue_console_command;
+    option_slider(menu, callbacks, p, view, "Board flip speed", "flip_speed", view.flip_speed, .1f, 3,
+        "Changes board rotation without changing pop height. Below 1, slow flips stay slow automatically. Ctrl-click to type; Enter applies and Escape cancels. Accepted range: 0.01 to 100.", "%.2fx", !view.catch_at);
+    if (view.catch_at) note("Automatic catch timing controls flip speed while it is on. Your custom speeds are kept.");
+    else note("Slower flips need enough air to finish. The old slow-flip switch is now automatic.");
+    if (!view.flip_live) note("Preparing animation controls after loading the map. This can take about 15 seconds; your settings are kept.");
+    bool catch_at = view.catch_at;
+    if (toggle_row(menu, "Automatic catch timing", "Catch a completed flip at a chosen point in the jump. This is scheduled assistance, not a manual catch.", catch_at, editable))
+        trainer_command(menu, callbacks, std::format("option catch_at {}", catch_at ? 1 : 0));
+    option_slider(menu, callbacks, p, view, "Catch point in the jump", "catch_percent", view.catch_percent, 1, 100,
+        "Percent from pop to landing. Start around 70%; 55–100% is the useful range. The estimate assumes level ground: drops and gaps can catch earlier. At 100% you may land while still flipping.", "%.0f%% of airtime", catch_at);
+    if (catch_at && !view.flip_gate_found) note("Catch timing is preparing after the map load.");
+    bool advanced = view.flip_advanced;
+    if (toggle_row(menu, "Per-trick flip speeds", "Give each flip its own multiplier, combined with Board flip speed. Nollie tricks use their regular trick's value. Stored values are kept when this is off.", advanced, editable))
+        trainer_command(menu, callbacks, std::format("option flip_advanced {}", advanced ? 1 : 0));
+    if (ImGui::CollapsingHeader("Individual flip speeds")) {
+        note("Each value multiplies the main board flip speed. Automatic catch timing takes priority.");
+        for (std::size_t i = 0; i < trainer::flip_tricks.size(); ++i) {
+            const auto &trick = trainer::flip_tricks[i];
+            option_slider(menu, callbacks, p, view, std::string(trick.label).c_str(), std::string(trick.key).c_str(), view.flip_trick[i], .1f, 3,
+                "1 keeps the main speed. Ctrl-click to type a multiplier from 0.01 to 100. Enter applies; Escape cancels.", "%.2fx main speed", advanced && !catch_at);
+        }
     }
-    ImGui::PopID();
+}
+void workshop_pumping(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, const trainer::View &view) {
+    option_slider(menu, callbacks, p, view, "Pump power", "pump_power", view.pump_power, 0, 5,
+        "1 keeps the game's pumping. Above 1 adds speed while pumping transitions; below 1 removes speed. 2 adds roughly one extra native pump's gain. Ctrl-click accepts 0 to 1000; large values are strong boosts.");
+    if (!view.pump_live) note("Preparing transition pumping after the map load. This can take about 15 seconds.");
 }
 
-// One screen for everything that changes how the game plays: the presets as dials and
-// switches, the trick multipliers, the player's own presets and the values themselves. All of
-// them show the same values, so none can disagree with another.
-// The player's own presets: save what is set now under a name, turn one on or off, share one as a
-// line of text, import one that was shared.
-void your_presets(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, const trainer::View &view, bool can_edit) {
-    begin_card(menu, "preset-save", "YOUR PRESETS", "Save a setup you like, go back to it, share it");
-    ImGui::BeginDisabled(!can_edit);
-    const float button = ImGui::CalcTextSize("Turn off").x + ImGui::GetStyle().FramePadding.x * 2;
+void workshop_feel(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, const trainer::View &view) {
+    workshop_heading(menu, "Find your feel", "Choose a starting point, review its changes, then apply. Fine tuning and locks stay yours.");
+    const std::array<const char *, 5> names{"Hardcore", "Authentic", "Stock", "Accessible", "Arcade"};
+    const int columns = ImGui::GetContentRegionAvail().x < px(550) ? 3 : 5;
+    const float width = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x * (columns - 1)) / columns;
+    for (int i = 0; i < 5; ++i) {
+        if (i % columns) ImGui::SameLine();
+        const auto amount = static_cast<float>(i) * .5f - 1;
+        const bool selected = std::abs(p.difficulty - amount) < .005f;
+        if (selected) skate_theme::push_primary_button();
+        if (ImGui::Button(names[i], ImVec2(width, px(38)))) p.difficulty = amount;
+        if (selected) skate_theme::pop_primary_button();
+    }
+    ImGui::Spacing();
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::SliderFloat("##feel-mixer", &p.difficulty, -1, 1, "Custom feel: %.2f", ImGuiSliderFlags_AlwaysClamp);
+    tip("Hardcore on the left; Stock in the middle; Arcade on the right. Selecting or moving this control only changes the preview.");
+    const auto plan = trainer::workshop::preview(view.rows, p.difficulty);
+    std::size_t changes{}, locked{};
+    for (const auto &change : plan) { if (change.locked) ++locked; else if (change.before != change.after) ++changes; }
+    note(std::format("Preview: {} changes, {} locked, {} supported controls.", changes, locked, plan.size()).c_str());
+    if (primary_button(menu, "Apply this feel", view.editable && callbacks.queue_console_command && changes))
+        trainer_command(menu, callbacks, "workshop " + number(p.difficulty));
+    note("Hardcore: 0.1x grind capture, firmer friction, lower grind pop. Test the feel on familiar spots.");
+    if (ImGui::CollapsingHeader("Review affected values")) {
+        if (ImGui::BeginTable("feel-preview", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("Control", ImGuiTableColumnFlags_WidthStretch, 2.0f);
+            ImGui::TableSetupColumn("Current"); ImGui::TableSetupColumn("Preview"); ImGui::TableHeadersRow();
+            for (const auto &change : plan) {
+                const auto row = std::ranges::find(view.rows, change.id, &trainer::Row::id);
+                ImGui::TableNextRow(); ImGui::TableNextColumn();
+                ImGui::TextWrapped("%s", row == view.rows.end() ? change.id.c_str() : row->friendly.empty() ? row->label.c_str() : row->friendly.c_str());
+                tip(change.id.c_str()); ImGui::TableNextColumn(); ImGui::TextUnformatted(display_number(change.before).c_str());
+                ImGui::TableNextColumn(); ImGui::TextUnformatted(change.locked ? "Locked" : display_number(change.after).c_str());
+            }
+            ImGui::EndTable();
+        }
+    }
+    ImGui::Spacing(); ImGui::Separator();
+    workshop_heading(menu, "Fine tune your feel", "Drag a slider or Ctrl-click to type. Changes apply when editing finishes.");
+    const auto dials = [&](std::initializer_list<const char *> names) {
+        ImGui::BeginDisabled(!view.editable || !callbacks.queue_console_command);
+        for (const auto *name : names) {
+            const auto preset = std::ranges::find(view.presets, name, &trainer::PresetRow::name);
+            if (preset != view.presets.end() && preset->dial) dial_row(menu, callbacks, p, *preset);
+        }
+        ImGui::EndDisabled();
+    };
+    if (ImGui::CollapsingHeader("Pop and airtime", ImGuiTreeNodeFlags_DefaultOpen)) dials({"Super Ollie", "Grind Pop", "Gravity"});
+    if (ImGui::CollapsingHeader("Speed and rotations")) dials({"Fast", "Fast Spins", "Fast Flips"});
+    if (ImGui::CollapsingHeader("Flips and catches")) workshop_flips(menu, callbacks, p, view);
+    if (ImGui::CollapsingHeader("Transition pumping")) workshop_pumping(menu, callbacks, p, view);
+    if (ImGui::CollapsingHeader("Landings and bails")) dials({"Hard To Bail"});
+    if (ImGui::CollapsingHeader("Grinds and slides", ImGuiTreeNodeFlags_DefaultOpen)) {
+        note("Capture assistance sets the distance for locking onto a rail or ledge. Entry speed and angle are separate.");
+        const auto lock = std::ranges::find(view.rows, std::string("physicsmode.grindlockdist"), [](const auto &row) { return lower(row.id); });
+        if (lock != view.rows.end() && lock->stock > 0) {
+            ImGui::PushID("capture-assist");
+            ImGui::TextUnformatted("Grind capture assistance");
+            const double low = .1, high = std::max(2.0, lock->value / lock->stock);
+            double value = p.active == "capture-assist" ? p.active_value : lock->value / lock->stock;
+            ImGui::BeginDisabled(!view.editable || !callbacks.queue_console_command);
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            const auto input = scalar_input("##assist", "%.2fx stock");
+            if (ImGui::SliderScalar("##assist", ImGuiDataType_Double, &value, &low, &high, input.format, ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp)) {
+                p.active = "capture-assist"; p.active_value = value;
+            }
+            if (input.cancelled) p.active.clear();
+            else if (ImGui::IsItemDeactivatedAfterEdit() && p.active == "capture-assist") {
+                trainer_command(menu, callbacks, "assist " + number(value)); p.active.clear();
+            }
+            tip("Adjusts rail, boardslide and nose/tail-slide capture distances together, relative to this map's stock. Locked values are skipped.");
+            ImGui::EndDisabled();
+            ImGui::TextDisabled("Rail capture: %.3f m (stock %.3f m)", lock->value, lock->stock);
+            ImGui::PopID();
+        }
+        dials({"Slick Grinds", "Revert Friction"});
+        if (ImGui::CollapsingHeader("Individual grind settings")) for (const auto &row : view.rows) {
+            const auto key = lower(row.id);
+            if (row.used && !row.detail && (key == "physicsmode.grindlockdist" || key == "physicsgrindsair.maxdistboardslide" ||
+                key == "physicsgrindsair.maxdisttipslide" || key == "physicsgrind.commonfrictionscalar" || key == "physicsgrind.curbfrictionscalar" ||
+                key == "physicsgrind.grind_tipslide_minangletoprimitive"))
+                value_row(menu, callbacks, p, view, row, false, true);
+        }
+        note("Animations, grind input gestures and balance behaviour are still governed by the game. Tuning these values alone cannot reproduce real skating.");
+    }
+}
+void workshop_settings(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, const trainer::View &view) {
+    workshop_heading(menu, "Physics settings", "Search and edit individual controls. Locks keep a value through presets and resets.");
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::InputTextWithHint("##search", "Search physics settings...", p.search.data(), p.search.size());
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (p.group < 1) p.group = 1;
+    const char *group = p.group > 1 && static_cast<std::size_t>(p.group) <= view.groups.size() + 1 ? view.groups[p.group - 2].c_str() : "Every group";
+    if (ImGui::BeginCombo("##group", group)) {
+        if (ImGui::Selectable("Every group", p.group == 1)) p.group = 1;
+        for (std::size_t i = 0; i < view.groups.size(); ++i)
+            if (ImGui::Selectable(view.groups[i].c_str(), p.group == static_cast<int>(i) + 2)) p.group = static_cast<int>(i) + 2;
+        ImGui::EndCombo();
+    }
+    ImGui::Checkbox("Only changed or locked", &p.only_changed);
+    if (ImGui::CollapsingHeader("Advanced filters")) {
+        ImGui::Checkbox("Individual graph points", &p.graph_points);
+        ImGui::Checkbox("Values with no use found", &p.show_unused);
+        note("Unverified controls may have no effect. Individual graph values can interact with their parent multiplier.");
+    }
+    p.mode = 2; filter_rows(p, view); trainer::note_class_list_shown();
+    note(std::format("{} settings shown, {} hidden as unverified.", p.shown.size(), p.hidden_unused).c_str());
+    if (ImGui::CollapsingHeader("Reset and maintenance")) {
+        ImGui::BeginDisabled(!view.editable || !callbacks.queue_console_command);
+        if (ImGui::Button("Reset unlocked physics")) trainer_command(menu, callbacks, "reset all");
+        tip("Restores physics values to stock; locked values and script-driven trick options remain.");
+        if (ImGui::Button("Reset everything...")) p.confirm_reset = true;
+        if (p.confirm_reset) {
+            warn("Clear all locks and restore physics and trick settings? Your saved preset library stays.");
+            if (ImGui::Button("Confirm full reset")) { trainer_command(menu, callbacks, "reset everything"); p.confirm_reset = false; p.active.clear(); }
+            ImGui::SameLine(); if (ImGui::Button("Cancel reset")) p.confirm_reset = false;
+        }
+        ImGui::EndDisabled();
+    }
+    ImGui::Separator();
+    ImGuiListClipper clipper;
+    // Each row occupies a stable three-line height; multiline labels must not use a
+    // guessed clipper height, so let ImGui measure a representative row.
+    clipper.Begin(static_cast<int>(p.shown.size()));
+    while (clipper.Step()) for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
+        value_row(menu, callbacks, p, view, view.rows[p.shown[static_cast<std::size_t>(i)]], !p.search[0] ? p.group <= 1 : true, true);
+    if (p.shown.empty()) note("No settings match. Clear the search or broaden the filters.");
+}
+void workshop_presets(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, const trainer::View &view) {
+    workshop_heading(menu, "Your presets", "Save a setup, review its values, or share it with another skater.");
+    ImGui::TextUnformatted("Preset name"); ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::InputText("##preset-name", p.preset_name.data(), p.preset_name.size());
+    if (primary_button(menu, "Save current setup", view.editable && callbacks.queue_console_command && p.preset_name[0] && view.capture_changed)) {
+        if (std::ranges::any_of(view.presets, [&](const auto &preset) { return !preset.builtin && lower(preset.name) == lower(p.preset_name.data()); }))
+            p.confirm_save = p.preset_name.data();
+        else trainer_command(menu, callbacks, std::string("preset save ") + p.preset_name.data());
+    }
+    if (!view.capture_changed) note("Change a physics value or trick setting before saving.");
+    if (!p.confirm_save.empty()) {
+        warn(("Replace the saved preset \"" + p.confirm_save + "\"?").c_str());
+        ImGui::BeginDisabled(!view.editable || !callbacks.queue_console_command);
+        if (ImGui::Button("Replace preset")) { trainer_command(menu, callbacks, "preset save " + p.confirm_save); p.confirm_save.clear(); }
+        ImGui::EndDisabled(); ImGui::SameLine(); if (ImGui::Button("Keep original")) p.confirm_save.clear();
+    }
+    ImGui::Spacing(); ImGui::Separator();
+    std::size_t count{};
     for (const auto &preset : view.presets) {
         if (preset.builtin) continue;
-        ImGui::PushID(preset.name.c_str());
+        ++count; ImGui::PushID(preset.name.c_str());
+        ImGui::PushFont(menu.bold); ImGui::TextWrapped("%s", preset.name.c_str()); ImGui::PopFont();
+        if (!preset.note.empty()) note(preset.note.c_str());
+        ImGui::BeginDisabled(!view.editable || !callbacks.queue_console_command);
         if (preset.active) {
-            ImGui::PushStyleColor(ImGuiCol_Button, skate_theme::blue);
-            if (ImGui::Button("Turn off", ImVec2(button, 0))) trainer_command(menu, callbacks, "preset remove " + preset.name);
-            ImGui::PopStyleColor();
-        } else if (ImGui::Button("Turn on", ImVec2(button, 0))) {
-            trainer_command(menu, callbacks, "preset apply " + preset.name);
-        }
-        tip("Turn on sets every value saved in this preset. Turn off puts those values back to the game's own.");
-        ImGui::SameLine();
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(preset.name.c_str());
-        ImGui::SameLine();
-        ImGui::TextDisabled("%s", preset.note.c_str());
-        ImGui::SameLine(ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX() - px(170));
-        if (ImGui::SmallButton("This map")) trainer_command(menu, callbacks, "profile set " + preset.name);
-        tip("Applies this preset by itself every time this map loads.");
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Share")) trainer_command(menu, callbacks, "preset export " + preset.name);
-        if (ImGui::IsItemHovered()) wrapped_tooltip("Copies this preset to the clipboard as one line of text. Paste it in a chat;\nanyone with the trainer can import it.");
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Delete")) trainer_command(menu, callbacks, "preset delete " + preset.name);
-        tip("Removes this preset from your list.");
-        ImGui::PopID();
-    }
-    ImGui::EndDisabled();
-    field(menu, "Name");
-    const float save = ImGui::CalcTextSize("Save").x + ImGui::GetStyle().FramePadding.x * 2;
-    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - save - ImGui::GetStyle().ItemSpacing.x);
-    ImGui::InputText("##preset-name", p.preset_name.data(), p.preset_name.size());
-    tip("A name for the preset you are about to save.");
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!p.preset_name[0] || view.stock);
-    if (ImGui::Button("Save", ImVec2(save, 0))) trainer_command(menu, callbacks, std::string("preset save ") + p.preset_name.data());
-    tip("Saves every value, dial and trick setting that is changed right now as a preset under this name. Share it from its row afterwards.");
-    ImGui::EndDisabled();
-    // Sharing: a preset travels as one line of text on the clipboard.
-    ImGui::BeginDisabled(view.stock);
-    if (ImGui::Button("Share what is changed now")) trainer_command(menu, callbacks, "preset export current");
-    ImGui::EndDisabled();
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) wrapped_tooltip("Copies your current setup to the clipboard as one line of text.");
-    ImGui::SameLine();
-    if (ImGui::Button("Import from clipboard")) {
-        const char *text = ImGui::GetClipboardText();
-        if (text && trainer::stage_import(text)) trainer_command(menu, callbacks, "preset import");
-        else feedback(menu, "The clipboard holds no text.");
-    }
-    if (ImGui::IsItemHovered()) wrapped_tooltip("Copy a preset line someone shared (it starts with RST1:), then press this.\nIt is added to your presets; nothing changes until you turn it on.");
-    if (!view.map.empty()) {
-        info(menu, "This map applies", view.profile_preset.empty() ? "nothing" : view.profile_preset);
-        if (!view.profile_preset.empty() && ImGui::Button("Stop applying it on this map")) trainer_command(menu, callbacks, "profile clear");
-        note("\"This map\" beside one of your presets applies it every time this map loads.");
-    }
-    end_card();
-}
-
-void tune_tab(SkateMenu &menu, const Model &model, const CallbacksV3 &callbacks, Page &p, const trainer::View &view) {
-    if (!view.ready) {
-        begin_card(menu, "tune-wait", "PHYSICS TUNING");
-        note(view.status.c_str());
-        note("The values appear once a level is loaded.");
-        end_card();
-        return;
-    }
-    // Two short lists, the trick line section and the whole table (modes 0, 1, 3 and 2).
-    {
-        static constexpr std::pair<const char *, int> modes[]{{"REALISTIC", 0}, {"FUN", 1}, {"TRICKLINING", 3}, {"EVERYTHING", 2}};
-        const float width = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x * 3) / 4;
-        bool first = true;
-        for (const auto &[label, mode] : modes) {
-            if (!first) ImGui::SameLine();
-            first = false;
-            const bool on = p.mode == mode;
-            if (on) ImGui::PushStyleColor(ImGuiCol_Button, skate_theme::blue);
-            if (ImGui::Button(label, ImVec2(width, 0))) p.mode = mode;
-            tip(mode == 0 ? "A short list for toning the game down: lower pops, slower pushes, harder bails."
-                : mode == 1 ? "A short list for turning the game up: bigger pops, faster pushes, moon jumps."
-                : mode == 3 ? "Everything that makes a trick line in one place: board bending, reverts, pumping, pops, spins, manuals and grinds."
-                            : "Every dial and every tuning value the trainer knows.");
-            if (on) ImGui::PopStyleColor();
-        }
-    }
-    const std::uint8_t list = p.mode == 0 ? trainer::mode_realistic : p.mode == 1 ? trainer::mode_fun : std::uint8_t{0xff};
-    const bool can_edit = view.editable && callbacks.queue_console_command != nullptr;
-    // One search for the whole tab: dials, switches, trick sliders and every value.
-    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
-    ImGui::InputTextWithHint("##search", "Search: dials, tricks and every value...", p.search.data(), p.search.size());
-    tip("Type a word to find dials, trick sliders and tuning values on every list at once. Clear the box to go back to the list.");
-    const auto words = lower(p.search.data());
-    const bool searching = !words.empty();
-    const auto listed = [&](const trainer::PresetRow &preset) {
-        return searching ? contains_words(lower(preset.title + " " + preset.name + " " + preset.note), words) : p.mode == 2 || (preset.modes & list) != 0;
-    };
-
-    // The whole-game choices (Play like, the player's saved setups) are on MAP & HUD; a trick line
-    // is the one list that is about a whole feel, so it keeps the choice at hand.
-    if (!searching && p.mode == 3) {
-        begin_card(menu, "feel", "PLAY LIKE", "The game's own tuning, or Skate 3's on one of its difficulties");
-        note("A Skate 3 choice sets Skate 3's own numbers for everything the two games share (pop, grind pops, pushing, pumping, steering, "
-                 "manuals, spins, bails), and for grinds the way they were before skate.: the older grind friction, Skate 3's lock-on distances, wider slide "
-                 "angles, and no automatic turning between grinds. What a number cannot change stays skate.'s: animations and which stick "
-                 "motion asks for which grind.");
-        ImGui::BeginDisabled(!can_edit);
-        feel_buttons(menu, callbacks, view);
-        ImGui::EndDisabled();
-        end_card();
-    }
-    if (p.mode == 3 && !searching) {
-        trickline_section(menu, callbacks, p, view);
-        return;
-    }
-    begin_card(menu, "dials", p.mode == 0 ? "FEEL: TONE IT DOWN" : p.mode == 1 ? "FEEL: TURN IT UP" : "FEEL",
-               "1 is the game's own. A dial moves every value its preset moves.");
-    ImGui::BeginDisabled(!can_edit);
-    for (const auto &preset : view.presets)
-        if (preset.builtin && preset.dial && listed(preset)) dial_row(menu, callbacks, p, preset);
-    // The presets that are plain switches, and the ones that set several dials at once.
-    bool first = true;
-    for (const auto &preset : view.presets) {
-        if (!preset.builtin || preset.dial || preset.name == "Stock" || preset.name.starts_with("Skate 3") || !listed(preset)) continue;
-        if (!first && ImGui::GetItemRectMax().x + ImGui::CalcTextSize(preset.name.c_str()).x + ImGui::GetStyle().FramePadding.x * 4 <
-                          ImGui::GetWindowPos().x + ImGui::GetContentRegionMax().x)
-            ImGui::SameLine();
-        first = false;
-        preset_switch(menu, callbacks, preset);
-    }
-    ImGui::EndDisabled();
-    if (p.mode != 0) {
-        // The game's own bail protection, the same switch as Skater > Movement.
-        const auto &debug = model.debug;
-        bool no_bail = debug.no_bail;
-        if (toggle_row(menu, "Never bail", "No wipeouts at all. Recover from a bail before switching it on.", no_bail,
-                (debug.no_bail_available || debug.no_bail) && callbacks.queue_debug != nullptr))
-            debug_request(menu, callbacks, {DebugAction::set_no_bail, no_bail});
-    }
-    ImGui::BeginDisabled(!can_edit || !view.touched);
-    if (ImGui::Button("Reset values")) trainer_command(menu, callbacks, "reset all");
-    if (ImGui::IsItemHovered()) wrapped_tooltip("Every tuning value back to the game's own. Locked values stay.");
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextDisabled("%zu values changed", view.touched);
-    note("To save or share the whole setup under a name, or to play like Skate 3: MAP & HUD, at the bottom.");
-    end_card();
-
-    ImGui::BeginDisabled(!can_edit);
-    trick_heights(menu, callbacks, p, view, words);
-    ImGui::EndDisabled();
-
-
-    // The values themselves: the short list's, or all of them.
-    ImGui::Spacing();
-    ImGui::SeparatorText(p.mode == 2 ? "EVERY VALUE" : "FINE TUNING");
-    if (p.mode == 2) {
-        // The list includes the game's tuning classes, which the trainer has to find in memory
-        // before an edit to one does anything: with the list open, it looks now.
-        trainer::note_class_list_shown();
-        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.42f);
-        if (p.group < 1) p.group = 1;
-        const char *current = p.group > 1 && static_cast<std::size_t>(p.group) <= view.groups.size() + 1
-            ? view.groups[static_cast<std::size_t>(p.group) - 2].c_str() : "Every group";
-        if (ImGui::BeginCombo("##group", current)) {
-            if (ImGui::Selectable("Every group", p.group == 1)) p.group = 1;
-            for (std::size_t i = 0; i < view.groups.size(); ++i)
-                if (ImGui::Selectable(view.groups[i].c_str(), p.group == static_cast<int>(i) + 2)) p.group = static_cast<int>(i) + 2;
-            ImGui::EndCombo();
-        }
-        tip("Shows one group of tuning values at a time.");
-        ImGui::Checkbox("Only what I changed", &p.only_changed);
-        tip("Lists only the values that differ from the game's own.");
-        ImGui::SameLine();
-        ImGui::Checkbox("Graph points", &p.graph_points);
-        if (ImGui::IsItemHovered()) wrapped_tooltip("Show every point of the tuning graphs, not just one multiplier per graph.");
-        ImGui::SameLine();
-        ImGui::Checkbox("Values with no use found", &p.show_unused);
-        if (ImGui::IsItemHovered())
-            wrapped_tooltip("Also list the tuning values that the game was never found or seen reading.\nChanging those will probably do nothing.");
-    } else if (searching) {
-        trainer::note_class_list_shown();
-    } else {
-        note("The same values the dials move, one at a time. The box on the left locks a value against presets, dials and Reset values.");
-    }
-    filter_rows(p, view);
-    if (p.mode != 2 && searching) ImGui::TextDisabled("%zu values match", p.shown.size());
-    if (p.mode == 2) {
-        ImGui::SameLine();
-        if (p.hidden_unused) ImGui::TextDisabled("%zu shown, %zu changed, %zu hidden", p.shown.size(), view.touched, p.hidden_unused);
-        else ImGui::TextDisabled("%zu shown, %zu changed", p.shown.size(), view.touched);
-    }
-    const bool with_group = searching || (p.mode == 2 && (p.group <= 1 || p.only_changed));
-    const bool friendly = p.mode < 2;
-    ImGuiListClipper clipper;
-    clipper.Begin(static_cast<int>(p.shown.size()));
-    while (clipper.Step())
-        for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
-            value_row(menu, callbacks, p, view, view.rows[p.shown[static_cast<std::size_t>(i)]], with_group, friendly);
-    if (p.shown.empty()) note("Nothing matches.");
-}
-
-void trick_heights(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, const trainer::View &view, const std::string &words) {
-    static constexpr const char *advanced_label = "Advanced trick speed (a speed for each flip trick: kickflip, heelflip, 360 flip, varial, shuvit, hardflip, laser flip, impossible)";
-    static constexpr const char *labels[]{"Flip trick speed", advanced_label, "Pump power (pumping transitions)", "Catch flips at a set point of the jump (realism, percent of air time)", "No comply height", "Boneless height", "Hippy jump height", "Off-board jump height",
-                                           "Board bending boost (revert speed)"};
-    const auto wanted = [&](const char *label) { return words.empty() || contains_words(lower(std::string(label) + " tricks"), words); };
-    if (std::ranges::none_of(labels, wanted)) return;
-    begin_card(menu, "trick-heights", "TRICKS", "1.0 is the game's own");
-    // `limited`: the game itself stops at the slider's end, so a typed number is held to it too.
-    const auto slider = [&](const char *label, const char *option, float value, float &edit, bool &editing, const char *help, float high = 50.0f, bool limited = false, bool always = false) {
-        if (!always && !wanted(label)) return false;
-        field(menu, label);
-        ImGui::PushID(option);
-        float shown = editing ? edit : value;
-        const float box = px(64);
-        ImGui::SetNextItemWidth(std::max(px(70), ImGui::GetContentRegionAvail().x - box - ImGui::GetStyle().ItemSpacing.x));
-        if (ImGui::SliderFloat("##height", &shown, 0.1f, high, "x %.2f", (limited ? ImGuiSliderFlags_AlwaysClamp : 0) | ImGuiSliderFlags_Logarithmic)) {
-            edit = shown;
-            editing = true;
-        }
-        if (ImGui::IsItemDeactivatedAfterEdit()) trainer_command(menu, callbacks, std::format("option {} {:.2f}", option, edit));
-        if (!ImGui::IsItemActive() && editing && std::abs(value - edit) < 0.005f * std::max(1.0f, std::abs(edit))) editing = false;
-        if (!ImGui::IsItemActive()) tip(help);
-        ImGui::SameLine();
-        float typed = value;
-        ImGui::SetNextItemWidth(box);
-        if (ImGui::InputFloat("##typed", &typed, 0, 0, "%.6g", ImGuiInputTextFlags_EnterReturnsTrue) && typed > 0) {
-            editing = false;
-            trainer_command(menu, callbacks, std::format("option {} {}", option, typed));
-        }
-        if (ImGui::IsItemHovered())
-            wrapped_tooltip(limited ? "Type a multiplier and press Enter." : "Type any multiplier and press Enter: the slider's end is not a limit.");
-        ImGui::PopID();
-        return true;
-    };
-    slider("Flip trick speed", "flip_speed", view.flip_speed, p.flip_edit, p.flip_editing,
-           "How fast the board turns in every flip trick. It does not change how high you pop. Below 1 flips are slower, above 1 faster. A slow "
-           "flip is slow from the start and is not hurried round before you land: with too little air you land on a board that is still turning. "
-           "It takes about 15 seconds to take hold after every level load: the trainer has to find the game's flip animations again first.",
-           3.0f);
-    if (!view.flip_live && (view.flip_speed != 1.0f || view.flip_advanced) && wanted("Flip trick speed"))
-        ImGui::TextDisabled("Finding the flip animations: flip speeds take hold about 15 seconds after a level loads.");
-    if (wanted(advanced_label)) {
-        bool on = view.flip_advanced;
-        if (ImGui::Checkbox("Advanced trick speed", &on)) trainer_command(menu, callbacks, std::format("option flip_advanced {}", on ? 1 : 0));
-        tip("Gives every flip trick a speed of its own, on top of the flip trick speed above: a kickflip at 1.0 and a 360 flip at 0.6, say. "
-            "A trick turns at the speed above times its own. Nollie tricks use their regular trick's speed. Pop height is not changed. "
-            "Unticked, the speeds below are kept but not used. Like the speed above, they take hold about 15 seconds after every level load.");
-        if (view.flip_advanced_blocked) ImGui::TextDisabled("Off in this multiplayer game: the host's rules apply here.");
-        if (on && ImGui::TreeNodeEx("Speed of each flip trick", ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_DefaultOpen)) {
-            for (std::size_t i = 0; i < trainer::flip_tricks.size(); ++i) {
-                const auto &trick = trainer::flip_tricks[i];
-                const std::string label(trick.label), option(trick.key);
-                slider(label.c_str(), option.c_str(), view.flip_trick[i], p.trick_edit[i], p.trick_editing[i],
-                       "How fast the board turns in this trick, times the flip trick speed above. 1 leaves it at that speed.", 3.0f, false, true);
+            if (ImGui::Button("Restore affected values")) trainer_command(menu, callbacks, "preset remove " + preset.name);
+        } else if (ImGui::Button("Review preset")) p.review_preset = preset.name;
+        if (p.review_preset == preset.name) {
+            note("Requested values below. Locked controls stay; linked graphs follow their parent. Unsupported values are retained but skipped on this build.");
+            std::size_t locked{}, unknown{};
+            for (const auto &[key, value] : preset.values) {
+                (void)value;
+                const auto row = std::ranges::find_if(view.rows, [&](const auto &item) { return lower(item.id) == lower(key); });
+                if (row != view.rows.end()) locked += row->frozen || row->preset_locked;
+                else if (!key.starts_with("trick.")) ++unknown;
             }
-            ImGui::TreePop();
+            note(std::format("{} saved values / {} locked / {} unavailable", preset.values.size(), locked, unknown).c_str());
+            if (primary_button(menu, "Apply reviewed preset", view.editable && callbacks.queue_console_command)) {
+                trainer_command(menu, callbacks, "preset apply " + preset.name); p.review_preset.clear();
+            }
+            if (ImGui::Button("Cancel review")) p.review_preset.clear();
+            if (ImGui::CollapsingHeader("Saved values", ImGuiTreeNodeFlags_DefaultOpen)) {
+                if (ImGui::BeginTable("saved-values", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+                    ImGui::TableSetupColumn("Control", ImGuiTableColumnFlags_WidthStretch, 3);
+                    ImGui::TableSetupColumn("Requested"); ImGui::TableHeadersRow();
+                    for (const auto &[key, value] : preset.values) {
+                        const auto row = std::ranges::find_if(view.rows, [&](const auto &item) { return lower(item.id) == lower(key); });
+                        ImGui::TableNextRow(); ImGui::TableNextColumn();
+                        ImGui::TextWrapped("%s", row == view.rows.end() ? key.c_str() : row->friendly.empty() ? row->label.c_str() : row->friendly.c_str());
+                        tip(key.c_str()); ImGui::TableNextColumn();
+                        ImGui::TextUnformatted(row != view.rows.end() && (row->frozen || row->preset_locked) ? "Locked" : display_number(value).c_str());
+                    }
+                    ImGui::EndTable();
+                }
+            }
         }
-    }
-    if (wanted("Catch flips at a set point of the jump (realism, percent of air time)")) {
-        bool on = view.catch_at;
-        if (ImGui::Checkbox("Catch flips at a set point of the jump", &on)) trainer_command(menu, callbacks, std::format("option catch_at {}", on ? 1 : 0));
-        if (ImGui::IsItemHovered())
-            wrapped_tooltip("%s", "For realism. Every flip trick turns so that the board is round, and caught, at the percent of the jump's air time "
-                                  "you set: 70 means the catch comes 70% of the way from the pop to the landing, on a small ollie and a big one alike. "
-                                  "While this is on the trainer sets the flip speed and the finish-before-landing rule itself, so the flip speed "
-                                  "above stands aside. The air time is worked out from the pop over level ground: off a drop or a gap the catch "
-                                  "comes earlier than asked. 100 or close to it means you land still flipping.");
-        ImGui::SameLine();
-        float percent = view.catch_percent;
-        ImGui::SetNextItemWidth(px(64));
-        if (ImGui::InputFloat("##catch-percent", &percent, 0, 0, "%.6g", ImGuiInputTextFlags_EnterReturnsTrue))
-            trainer_command(menu, callbacks, std::format("option catch_percent {}", percent));
-        if (ImGui::IsItemHovered()) wrapped_tooltip("%s", "Percent of the air time at which the flip is caught. Type a number from 1 to 100 and press Enter.");
-        ImGui::SameLine();
-        ImGui::TextUnformatted("% of the air time");
-        if (view.catch_at && view.flip_gate_blocked) ImGui::TextDisabled("Off in this multiplayer game: the host's rules apply here.");
-        else if (on && !view.flip_gate_found) ImGui::TextDisabled("Not found in the game yet: it takes effect a few seconds after a level loads.");
-    }
-    slider("No comply height", "nocomply_height", view.nocomply_height, p.nocomply_edit, p.nocomply_editing, "How high a no comply pops. 1 is the game's own.");
-    slider("Boneless height", "boneless_height", view.boneless_height, p.boneless_edit, p.boneless_editing, "How high a boneless pops. 1 is the game's own.");
-    slider("Hippy jump height", "hippy_height", view.hippy_height, p.hippy_edit, p.hippy_editing, "How high you jump off the board in a hippy jump. 1 is the game's own.");
-    slider("Off-board jump height", "offboard_height", view.offboard_height, p.offboard_edit, p.offboard_editing, "How high you jump on foot. 1 is the game's own.");
-    if (slider("Pump power (pumping transitions)", "pump_power", view.pump_power, p.pump_edit, p.pump_editing,
-               "How much speed pumping a transition gives. 1 is the game's own; 2 gives about one more of the game's pumps on top of each "
-               "of yours, 10 about nine more, and under 1 takes speed away. The game still decides when you are pumping: the extra comes "
-               "for as long as it counts you as pumping. It is found in the game about 15 seconds after a level loads.")) {
-        if (view.pump_blocked) ImGui::TextDisabled("Off in this multiplayer game: the host's rules apply here.");
-        else if (view.pump_power != 1.0f && !view.pump_live) ImGui::TextDisabled("Finding the game's pumping in memory: it acts about 15 seconds after a level loads.");
-    }
-    if (wanted("Board bending boost (revert speed)")) {
-        // Not a multiplier: 0 is the game's own (no boost).
-        field(menu, "Board bending boost");
-        ImGui::PushID("revert_boost");
-        float shown = p.revert_editing ? p.revert_edit : view.revert_boost;
-        const float box = px(64);
-        ImGui::SetNextItemWidth(std::max(px(70), ImGui::GetContentRegionAvail().x - box - ImGui::GetStyle().ItemSpacing.x));
-        if (ImGui::SliderFloat("##strength", &shown, 0.0f, 5.0f, shown <= 0.0f ? "off" : "x %.2f")) {
-            p.revert_edit = shown;
-            p.revert_editing = true;
+        if (ImGui::Button("Use on this map")) trainer_command(menu, callbacks, "profile set " + preset.name);
+        ImGui::EndDisabled();
+        if (ImGui::Button("Share preset")) trainer_command(menu, callbacks, "preset export " + preset.name);
+        if (ImGui::Button("Delete...")) p.confirm_delete = preset.name;
+        if (p.confirm_delete == preset.name) {
+            warn("Delete this saved preset? Current tuning will stay.");
+            if (ImGui::Button("Confirm delete")) { trainer_command(menu, callbacks, "preset delete " + preset.name); p.confirm_delete.clear(); }
+            ImGui::SameLine(); if (ImGui::Button("Keep preset")) p.confirm_delete.clear();
         }
-        if (ImGui::IsItemDeactivatedAfterEdit()) trainer_command(menu, callbacks, std::format("option revert_boost {:.2f}", p.revert_edit));
-        if (!ImGui::IsItemActive() && p.revert_editing && std::abs(view.revert_boost - p.revert_edit) < 0.006f) p.revert_editing = false;
-        if (ImGui::IsItemHovered())
-            wrapped_tooltip("Board bending: land with the board turned out of line and the game snaps it straight. With this on, that snap\n"
-                              "throws you forward, as it did in Skate 3: chain bends to keep and build speed without pushing.\n"
-                              "x 1 gives about +1.5 to +2.6 m/s a landing. 0 is off, the game's own. The Tricklining list has the details.\n"
-                              "From AutoRevertBoost by Sivaes, jaq and OVM.");
-        ImGui::SameLine();
-        float typed = view.revert_boost;
-        ImGui::SetNextItemWidth(box);
-        if (ImGui::InputFloat("##typed", &typed, 0, 0, "%.6g", ImGuiInputTextFlags_EnterReturnsTrue) && typed >= 0) {
-            p.revert_editing = false;
-            trainer_command(menu, callbacks, std::format("option revert_boost {}", typed));
+        ImGui::PopID(); ImGui::Spacing(); ImGui::Separator();
+    }
+    if (!count) note("Your saved setups will appear here. Give your current setup a name or import a shared preset.");
+    workshop_heading(menu, "Import and share");
+    if (ImGui::Button("Import from clipboard")) {
+        const auto *text = ImGui::GetClipboardText();
+        if (text && trainer::stage_import(text)) trainer_command(menu, callbacks, "preset import");
+        else feedback(menu, "Copy a complete RST1 preset line first.");
+    }
+    note("Imports add to your library and never apply automatically. Existing names are preserved with a numbered copy.");
+    if (ImGui::Button("Share current setup")) trainer_command(menu, callbacks, "preset export current");
+    info(menu, "This map applies", view.profile_preset.empty() ? "No preset" : view.profile_preset);
+    if (!view.profile_preset.empty() && ImGui::Button("Stop applying on this map")) trainer_command(menu, callbacks, "profile clear");
+    if (ImGui::CollapsingHeader("Skate 3 reference presets")) {
+        note("These retain the community trainer's Skate 3 tuning. They are separate from the curated Feel profiles.");
+        ImGui::BeginDisabled(!view.editable || !callbacks.queue_console_command); feel_buttons(menu, callbacks, view); ImGui::EndDisabled();
+    }
+}
+struct FunShortcut {
+    const char *name, *label, *hint;
+    std::size_t group;
+};
+constexpr FunShortcut fun_shortcuts[]{
+    {"Super Ollie", "Super ollie", "Larger ollies and grind pops for clearing big gaps.", 0},
+    {"Mega Pop", "Mega pop", "Raises held, quick and grind pops together.", 0},
+    {"Grind Pop", "Higher grind pops", "Doubles pops out of grinds, boardslides and nose or tail slides.", 0},
+    {"Gravity", "Stronger board gravity", "1.3x board gravity: quicker drops and less float.", 0},
+    {"Fast Flips", "Faster body flips", "Faster front and back flips. Board kickflips stay unchanged.", 1},
+    {"Fast Spins", "Faster body spins", "Triple body rotation speed for bigger spins.", 1},
+    {"Fast", "Faster pushing", "Higher push targets and a later speed-wobble threshold.", 2},
+    {"Auto Push", "Auto push", "Keeps an already rolling skater moving up to the auto-push speed.", 2},
+    {"No Speed Wobble", "Delay speed wobble", "Raises wobble onset to 20x stock; it is not removed entirely.", 2},
+    {"Smooth Surfaces", "Smooth surfaces", "Makes rough ground ride more smoothly without changing its appearance.", 2},
+    {"Long Wheelbase", "Longer wheelbase", "Changes both truck positions. Takes effect on your next respawn.", 2},
+    {"Sticky Grinds", "Easier grind entry", "Wider capture distances and more forgiving entry speed and angle.", 3},
+    {"Slick Grinds", "Slick grinds", "Lower grind and curb friction to carry speed farther.", 3},
+    {"Soft Landings", "Softer landings", "Raises landing-speed limits for larger drops and sideways landings.", 3},
+    {"Hard To Bail", "Harder to bail", "Raises impact limits and disables the bad-landing check.", 3},
+    {"Revert Friction", "More revert friction", "Reverts scrub three times as much speed. This does not add a boost.", 3},
+    {"Moon Jump", "Moon jump", "Higher on-foot jumps; can combine with the off-board height multiplier.", 4},
+    {"Fast On Foot", "Faster sprinting", "Raises on-foot sprint speed to 1.8x stock.", 4},
+    {"Super Glide", "Super glide", "Lighter spread-eagle gravity and stronger air steering.", 4},
+    {"Torpedo Boost", "Torpedo steering", "Stronger torpedo and falling air control.", 4},
+    {"Board Mount", "Calmer board mount", "Experimental: lower roll-away speed when mounting from a jog or sprint.", 5},
+    {"Easy Body Flips", "Easier body flips", "Experimental: lower the airtime needed to start a front or back flip.", 5},
+    {"Deep Landings", "Deeper landings", "Experimental: more leg compression on landing.", 5},
+};
+bool fun_preset(const trainer::PresetRow &preset) {
+    return preset.builtin && preset.name != "Stock" && !preset.name.starts_with("Skate 3") &&
+           preset.name != "Realistic" && !trainer::workshop::amount(preset.name);
+}
+// Native selectable rows keep the menu's controller navigation, with a readable
+// explanation and explicit state rather than a wall of undifferentiated buttons.
+void fun_switch(SkateMenu &menu, const CallbacksV3 &callbacks, const trainer::View &view,
+                const trainer::PresetRow &preset, const FunShortcut *shortcut) {
+    const char *label = shortcut ? shortcut->label : preset.name.c_str();
+    std::string hint = shortcut ? shortcut->hint : preset.note;
+    if (view.boosts_blocked && preset.name == "Auto Push") hint = "Auto-push assistance is disabled by this host. Your stored setting is kept.";
+    if (view.boosts_blocked && preset.name == "Fast") hint += " Extra push carry is disabled by this host.";
+    const bool available = view.editable && !view.session_enforced && callbacks.queue_console_command &&
+                           !(view.boosts_blocked && preset.name == "Auto Push");
+    ImGui::BeginDisabled(!available);
+    const auto at = ImGui::GetCursorScreenPos();
+    const float width = ImGui::GetContentRegionAvail().x;
+    const float pad = px(12), block = px(62), gap = px(12);
+    const float text_width = std::max(px(80), width - 2 * pad - block - gap);
+    const float title_size = px(16), hint_size = px(14);
+    const float title_height = menu.bold->CalcTextSizeA(title_size, FLT_MAX, text_width, label).y;
+    const float hint_height = hint.empty() ? 0 : menu.body->CalcTextSizeA(hint_size, FLT_MAX, text_width, hint.c_str()).y;
+    const float height = std::max(px(68), 2 * pad + title_height + px(4) + hint_height);
+    const std::string id = "##fun-preset-" + preset.name;
+    if (ImGui::Selectable(id.c_str(), false, ImGuiSelectableFlags_None, ImVec2(width, height)))
+        trainer_command(menu, callbacks, std::string(preset.active ? "preset remove " : "preset apply ") + preset.name);
+    const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
+    auto *draw = ImGui::GetWindowDrawList();
+    if (hovered && available) draw->AddRectFilled(at, ImVec2(at.x + width, at.y + height), skate_theme::tile_light);
+    if (ImGui::IsItemFocused()) draw->AddRect(at, ImVec2(at.x + width, at.y + height), skate_theme::white, 0, 0, px(2));
+    draw->PushClipRect(at, ImVec2(at.x + width, at.y + height), true);
+    draw->AddText(menu.bold, title_size, ImVec2(at.x + pad, at.y + pad),
+                  ImGui::GetColorU32(skate_theme::white), label, nullptr, text_width);
+    if (!hint.empty()) draw->AddText(menu.body, hint_size, ImVec2(at.x + pad, at.y + pad + title_height + px(4)),
+                                    ImGui::GetColorU32(skate_theme::grey_text), hint.c_str(), nullptr, text_width);
+    const ImVec2 box(at.x + width - pad - block, at.y + pad);
+    const bool on = preset.active;
+    draw->AddRectFilled(box, ImVec2(box.x + block, box.y + px(28)),
+                        ImGui::GetColorU32(on ? skate_theme::blue : skate_theme::tile_grey));
+    const char *state = on ? "ON" : "OFF";
+    const auto size = menu.bold->CalcTextSizeA(px(14), FLT_MAX, 0, state);
+    draw->AddText(menu.bold, px(14), ImVec2(box.x + (block - size.x) / 2, box.y + (px(28) - size.y) / 2),
+                  ImGui::GetColorU32(on ? skate_theme::black : skate_theme::white), state);
+    draw->AddLine(ImVec2(at.x + pad, at.y + height), ImVec2(at.x + width - pad, at.y + height),
+                  ImGui::GetColorU32(IM_COL32(255, 255, 255, 24)));
+    draw->PopClipRect();
+    if (hovered || (ImGui::IsItemFocused() && GImGui->NavCursorVisible)) wrapped_tooltip("%s\n\n%s", hint.c_str(),
+        available ? "Toggle this shortcut. Restoring it puts its affected settings back to stock; locked values stay." :
+                    "Unavailable under the current session rules or while the command dispatcher is disconnected.");
+    ImGui::EndDisabled();
+}
+void fun_toggles(SkateMenu &menu, const CallbacksV3 &callbacks, const trainer::View &view) {
+    struct Group { const char *id, *title; };
+    static constexpr Group groups[]{
+        {"pop", "Pop and airtime"}, {"rotations", "Body rotations"}, {"board", "Speed and board feel"},
+        {"grinds", "Grinds and landings"}, {"foot", "On foot and falling"}, {"experimental", "Experimental tweaks"},
+        {"other", "Other shortcuts"},
+    };
+    std::array<std::vector<std::pair<const trainer::PresetRow *, const FunShortcut *>>, std::size(groups)> grouped;
+    std::size_t active{};
+    for (const auto &preset : view.presets) {
+        if (!fun_preset(preset)) continue;
+        const auto found = std::ranges::find(fun_shortcuts, preset.name, &FunShortcut::name);
+        const auto *shortcut = found == std::end(fun_shortcuts) ? nullptr : found;
+        grouped[shortcut ? shortcut->group : std::size(groups) - 1].push_back({&preset, shortcut});
+        active += preset.active ? 1 : 0;
+    }
+    workshop_heading(menu, "Quick toggles", "Expand a category for one-click experiments. ON means the shortcut's values are set.");
+    note(std::format("{} {} on. Shortcuts share settings; restoring one resets its affected values to stock. Locks stay.", active, active == 1 ? "shortcut" : "shortcuts").c_str());
+    for (std::size_t group = 0; group < std::size(groups); ++group) {
+        const auto &entries = grouped[group];
+        if (entries.empty()) continue;
+        const auto on = std::ranges::count_if(entries, [](const auto &entry) { return entry.first->active; });
+        const std::string label = std::format("{} ({} on)###fun-{}", groups[group].title, on, groups[group].id);
+        if (!ImGui::CollapsingHeader(label.c_str())) continue;
+        const int columns = ImGui::GetContentRegionAvail().x >= px(840) ? 2 : 1;
+        ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(px(4), px(4)));
+        if (ImGui::BeginTable(groups[group].id, columns, ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings)) {
+            for (const auto &[preset, shortcut] : entries) {
+                ImGui::TableNextColumn();
+                fun_switch(menu, callbacks, view, *preset, shortcut);
+            }
+            ImGui::EndTable();
         }
-        if (ImGui::IsItemHovered()) wrapped_tooltip("Type any strength and press Enter: the slider's end is not a limit.");
-        ImGui::PopID();
+        ImGui::PopStyleVar(); ImGui::Spacing();
     }
-    if (ImGui::Button("Reset tricks")) {
-        p.revert_editing = false;
-        p.hippy_editing = p.nocomply_editing = p.boneless_editing = p.offboard_editing = p.flip_editing = p.pump_editing = false;
-        p.trick_editing = {};
-        trainer_command(menu, callbacks, "reset tricks");
+}
+void workshop_fun(SkateMenu &menu, const Model &model, const CallbacksV3 &callbacks, Page &p, const trainer::View &view) {
+    workshop_heading(menu, "Tricklining and experiments", "Build momentum through a line, then explore heights and quick toggles below.");
+    if (ImGui::CollapsingHeader("Tricklining and reverts", ImGuiTreeNodeFlags_DefaultOpen)) trickline_section(menu, callbacks, p, view);
+    if (ImGui::CollapsingHeader("Jump heights")) {
+        ImGui::BeginDisabled(!view.editable || !callbacks.queue_console_command); trick_heights(menu, callbacks, p, view, {}); ImGui::EndDisabled();
     }
-    tip("Puts every slider and switch on this card back to the game's own.");
-    note("Not tuning values: the game sets these in its trick scripts and flip curves. Type in the box to go past a slider's end.");
+    ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
+    fun_toggles(menu, callbacks, view);
+    ImGui::Spacing();
+    note("Never bail is in Skater > Movement. Flip speed, catch timing and pump power are in Feel.");
+    (void)model;
+}
+void trick_heights(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, const trainer::View &view, const std::string &words) {
+    (void)words;
+    begin_card(menu, "trick-heights", "JUMP HEIGHTS");
+    note("1x keeps the game's height. These multipliers can combine with the shortcuts below.");
+    option_slider(menu, callbacks, p, view, "No comply height", "nocomply_height", view.nocomply_height, .1f, 50, "Height relative to stock. Ctrl-click to type a precise multiplier.");
+    option_slider(menu, callbacks, p, view, "Boneless height", "boneless_height", view.boneless_height, .1f, 50, "Height relative to stock. Ctrl-click to type a precise multiplier.");
+    option_slider(menu, callbacks, p, view, "Hippy jump height", "hippy_height", view.hippy_height, .1f, 50, "Height relative to stock. Ctrl-click to type a precise multiplier.");
+    option_slider(menu, callbacks, p, view, "Off-board jump height", "offboard_height", view.offboard_height, .1f, 50, "Jump height on foot, relative to stock. Ctrl-click to type a precise multiplier.");
+
+    ImGui::BeginDisabled(!view.editable || view.session_enforced || view.boosts_blocked || !callbacks.queue_console_command);
+    if (ImGui::Button("Reset tricks...")) p.confirm_tricks = true;
+    if (p.confirm_tricks) {
+        warn("Restore all trick options, including flip speeds, catch timing, pump power and these boosts? Saved presets stay.");
+        if (ImGui::Button("Confirm trick reset")) { trainer_command(menu, callbacks, "reset tricks"); p.confirm_tricks = false; p.active.clear(); }
+        ImGui::SameLine(); if (ImGui::Button("Keep trick settings")) p.confirm_tricks = false;
+    }
+    ImGui::EndDisabled();
+    note("Reset tricks also restores flip speed, catch timing and pump power in Feel. Saved presets stay.");
     end_card();
 }
+
 
 void practice_tab(SkateMenu &menu, const Model &model, const CallbacksV3 &callbacks, Page &p, const trainer::View &view) {
     const auto telemetry = trainer::telemetry();
@@ -722,15 +799,8 @@ void feel_buttons(SkateMenu &menu, const CallbacksV3 &callbacks, const trainer::
 // Everything that makes a trick line, in one place: the same values and sliders as the Tune tab,
 // gathered, with one button for Skate 3's and one for the game's own.
 void trickline_section(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, const trainer::View &view) {
-    const bool can_edit = view.editable && callbacks.queue_console_command != nullptr;
+    const bool can_edit = view.editable && !view.session_enforced && callbacks.queue_console_command != nullptr;
     ImGui::BeginDisabled(!can_edit);
-    begin_card(menu, "trickline", "TRICKLINING EXTRAS", "What Skate 3's tricklining had beyond its tuning");
-    bool extras = view.revert_boost > 0;
-    if (toggle_row(menu, "Skate 3's tricklining extras",
-            "The board bending boost below at x 1, and heavier revert and powerslide friction (x 3 and x 1.5: a first guess, tune them below).", extras))
-        trainer_command(menu, callbacks, extras ? "trickline extras on" : "trickline extras off");
-    note("Pick the game to play like above, then tune the tricklining part of it here. Blue = changed; Reset puts one value back. Type in a box to go past a slider's end.");
-    end_card();
 
     // Rows of the value table by id, looked up once per snapshot.
     static constexpr const char *groups[][2]{
@@ -786,66 +856,56 @@ void trickline_section(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, c
             if (i < view.rows.size()) value_row(menu, callbacks, p, view, view.rows[i], false, true);
     };
 
-    begin_card(menu, "trick-revert", "BOARD BENDING, REVERTS AND POWERSLIDES", "Speed out of a bent landing");
-    {
-        // The revert speed boost: its strength, then what counts and what it is worth.
-        const auto number_row = [&](const char *label, const char *command, float value, float low, float high, const char *format, const char *tip) {
-            ImGui::PushID(command);
-            field(menu, label);
-            const auto key = std::string("revert:") + command;
-            float shown = p.active == key ? static_cast<float>(p.active_value) : value;
-            ImGui::SetNextItemWidth(std::max(px(70), ImGui::GetContentRegionAvail().x - px(64) - ImGui::GetStyle().ItemSpacing.x));
-            if (ImGui::SliderFloat("##value", &shown, low, high, format)) trainer_command(menu, callbacks, std::format("{} {:.3f}", command, shown));
-            if (ImGui::IsItemActive()) {
-                p.active = key;
-                p.active_value = shown;
-            } else if (p.active == key) {
-                p.active.clear();
-            }
-            if (ImGui::IsItemHovered()) wrapped_tooltip("%s", tip);
-            ImGui::SameLine();
-            float typed = value;
-            ImGui::SetNextItemWidth(px(64));
-            if (ImGui::InputFloat("##typed", &typed, 0, 0, "%.6g", ImGuiInputTextFlags_EnterReturnsTrue)) trainer_command(menu, callbacks, std::format("{} {}", command, typed));
-            if (ImGui::IsItemHovered()) wrapped_tooltip("%s", "Type any number and press Enter: the slider's ends are not a limit.");
-            ImGui::PopID();
-        };
+    begin_card(menu, "trick-revert", "MOMENTUM AND REVERTS");
+    note("Board bending can add speed when the board lands out of line with your body. 0x keeps it off; 1x uses the boost amounts below. Tune how reverts and powerslides carry momentum below.");
+    option_slider(menu, callbacks, p, view, "Board bending boost", "revert_boost", view.revert_boost, 0, 5,
+        "0 is off. Adds speed when a twisted landing snaps straight. Ordinary 180s do not count by default. From AutoRevertBoost by Sivaes, jaq and OVM.",
+        "%.2fx");
+    ImGui::Spacing();
+    note("Tricklining extras apply at least 1x bending, 3x revert friction and 1.5x powerslide friction. Restore turns bending off and restores those friction values to stock. Locks stay.");
+    ImGui::BeginDisabled(!can_edit || view.boosts_blocked);
+    const float actions_width = ImGui::GetContentRegionAvail().x;
+    const bool paired = actions_width >= px(580);
+    const float action_width = paired ? (actions_width - ImGui::GetStyle().ItemSpacing.x) / 2 : actions_width;
+    if (ImGui::Button("Apply tricklining extras", ImVec2(action_width, px(36))))
+        trainer_command(menu, callbacks, "trickline extras on");
+    tip("Applies the extras bundle, respecting locks. This is separate from your custom bending amount.");
+    if (paired) ImGui::SameLine();
+    if (ImGui::Button("Restore stock extras", ImVec2(action_width, px(36))))
+        trainer_command(menu, callbacks, "trickline extras off");
+    tip("Turns board bending off and restores revert, auto-revert and powerslide friction. It does not undo to previous custom values; locks stay.");
+    ImGui::EndDisabled();
+    if (ImGui::TreeNodeEx("What counts as a bend, and what it is worth", ImGuiTreeNodeFlags_SpanAvailWidth)) {
         const auto &r = view.revert;
-        note("Board bending is how tricklining keeps its speed. Land a spin with the board twisted off your body "
-             "and the game snaps the board straight. In Skate 3 that snap threw you forward, so "
-             "liners bend the board on every landing instead of pushing. skate. gives nothing for it; this boost puts the speed back.");
-        number_row("Board bending boost", "option revert_boost", view.revert_boost, 0.0f, 5.0f, view.revert_boost <= 0 ? "off" : "x %.2f",
-                   "How hard a bend throws you forward. 0 is off, the game's own; x 1 is about +2 m/s (7 km/h) a landing.\nFrom AutoRevertBoost by Sivaes, jaq and OVM.");
+        const auto rule = [&](const char *label, const char *command, float value, float low, float high, const char *format, const char *help) {
+            command_slider(menu, callbacks, p, view, label, command, command, value, low, high, help, format);
+        };
+        rule("Spin needed", "revert spin", r.min_spin, 0, 180, "%.0f deg", "Minimum spin in the air before a landing can earn a bending boost.");
+        rule("Board off the travel (90 deg disables this rule)", "revert slip", r.min_slip, 0, 90, "%.0f deg", "Minimum angle to the travel direction. 90 disables this travel-angle rule.");
+        rule("Board off your body", "revert twist", r.min_twist, 0, 90, "%.0f deg", "Minimum board-to-body twist at landing that can count as a bend.");
+        rule("Small bend boost", "revert bend", r.bend_boost, 0, 10, "+%.1f m/s", "Speed added for a small bend, multiplied by Board bending boost.");
+        rule("Full bend boost", "revert full", r.full_boost, 0, 10, "+%.1f m/s", "Speed added for a full bend, multiplied by Board bending boost.");
+        rule("Auto revert boost", "revert auto", r.auto_boost, 0, 10, "+%.1f m/s", "Speed added for an automatic revert, multiplied by Board bending boost.");
+        rule("No boost above", "revert max_speed", r.max_speed, 5, 100, "%.1f m/s", "No extra speed above this limit. 1 m/s is 3.6 km/h.");
+        rule("Time between boosts", "revert cooldown", r.cooldown, 0, 3, "%.2f s", "Minimum wait between bending boosts.");
+        rule("Shortest flight", "revert min_air", r.min_air, 0, 2, "%.2f s", "Shorter hops cannot earn a bending boost.");
         ImGui::Spacing();
-        if (ImGui::TreeNodeEx("What counts as a bend, and what it is worth", ImGuiTreeNodeFlags_SpanAvailWidth)) {
-        number_row("Spin needed", "revert spin", r.min_spin, 0.0f, 180.0f, "%.0f deg", "How far you must have turned in the air. Lower it and smaller turns count as bends.");
-        number_row("Board off your body", "revert twist", r.min_twist, 0.0f, 90.0f, "%.0f deg",
-                   "The rule that makes a bend: the board must land twisted at least this far off your body. Clean and short 180s land 0 to 3 degrees off, "
-                   "auto reverts and board bends 70 to 90.");
-        number_row("or off the travel", "revert slip", r.min_slip, 0.0f, 90.0f, r.min_slip >= 90.0f ? "off" : "%.0f deg",
-                   "Off at 90, as shipped. Lower it and a landing also counts when you and the board together land this far out of line with where you are "
-                   "going. Careful: the game straightens ordinary 180s that way too, so a low number gives speed on plain 180s and flip trick 180s. A "
-                   "landing that counts by this rule alone gets the auto revert boost at most.");
-        number_row("Boost: a small bend", "revert bend", r.bend_boost, 0.0f, 10.0f, "+%.1f m/s", "Speed added when the board turned 40 degrees past the body over the flight (times the boost strength).");
-        number_row("Boost: a full bend", "revert full", r.full_boost, 0.0f, 10.0f, "+%.1f m/s", "The same at 360 degrees; in between it rises in a straight line up to 140 degrees.");
-        number_row("Boost: an auto revert", "revert auto", r.auto_boost, 0.0f, 10.0f, "+%.1f m/s", "Speed added when the board turned more than 140 degrees past the body.");
-        number_row("No boost above", "revert max_speed", r.max_speed, 5.0f, 100.0f, "%.0f m/s", "Reverts stop adding speed here (1 m/s = 3.6 km/h).");
-        number_row("Time between boosts", "revert cooldown", r.cooldown, 0.0f, 3.0f, "%.2f s", "How soon the next revert can boost again.");
-        number_row("Shortest flight", "revert min_air", r.min_air, 0.0f, 2.0f, "%.2f s", "A hop shorter than this never boosts.");
+        ImGui::BeginDisabled(view.boosts_blocked);
         if (ImGui::Button("Reset these rules")) trainer_command(menu, callbacks, "revert reset");
-        tip("Puts the rules above back to the trainer's defaults.");
+        tip("Restores the nine rules above. Board bending strength and saved presets stay.");
+        ImGui::EndDisabled();
         ImGui::TreePop();
-        }
-        ImGui::Spacing();
     }
-    note("Friction: how much speed a revert or a powerslide scrubs off (higher loses more). Skate 3's were heavier, which is why bending "
-         "mattered there. Forward force: a push the game adds while you revert or slide.");
-    rows(0);
+    ImGui::Spacing();
+    if (ImGui::CollapsingHeader("Friction and forward force")) {
+        note("Friction removes speed; forward force adds a push during a revert or slide. Blue values are changed. Ctrl-click to type precisely.");
+        rows(0);
+    }
     end_card();
-    trick_heights(menu, callbacks, p, view, std::string{});
+    static constexpr const char *tuning_sections[]{"", "Transition tuning", "Pop tuning", "Rotation tuning", "Manuals and grind tuning"};
     for (std::size_t g = 1; g < std::size(groups); ++g) {
-        if (p.trick_rows[g].empty()) continue;
-        begin_card(menu, groups[g][0], groups[g][0]);
+        if (p.trick_rows[g].empty() || !ImGui::CollapsingHeader(tuning_sections[g])) continue;
+        begin_card(menu, groups[g][0]);
         note(group_notes[g]);
         rows(g);
         end_card();
@@ -853,8 +913,7 @@ void trickline_section(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, c
     ImGui::EndDisabled();
 }
 
-
-void map_tab(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, const trainer::View &view) {
+void map_tab(SkateMenu &menu, const CallbacksV3 &callbacks, const trainer::View &view) {
     const auto telemetry = trainer::telemetry();
     begin_card(menu, "hud", "HUD");
     bool hud = view.hud, jump = view.hud_jump, logging = view.logging;
@@ -909,20 +968,6 @@ void map_tab(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, const train
     if (view.map_note.empty() && view.map_preset.empty() && view.spots.empty())
         note("Map makers can ship a trainer.json in their mod folder with spots and a recommended preset.");
     end_card();
-
-    // The whole game at once: which game it plays like, and the player's own saved setups. (The
-    // presets on TUNE each change one thing.)
-    if (view.ready) {
-        const bool can_edit = view.editable && callbacks.queue_console_command != nullptr;
-        begin_card(menu, "feel", "PLAY LIKE", "The game's own tuning, or Skate 3's on one of its difficulties");
-        ImGui::BeginDisabled(!can_edit);
-        feel_buttons(menu, callbacks, view);
-        ImGui::EndDisabled();
-        note("A Skate 3 choice sets Skate 3's own numbers for everything the two games share. The dials and switches on TUNE each change one "
-             "thing: set those as you like, then save the whole setup below.");
-        end_card();
-        your_presets(menu, callbacks, p, view, can_edit);
-    }
 }
 } // namespace
 
@@ -931,10 +976,15 @@ bool trainer_take_open() {
     auto &p = page();
     if (view->open_serial == p.open_serial) return false;
     p.open_serial = view->open_serial;
-    // "presets": the player's saved setups are at the bottom of MAP & HUD.
-    p.tab = view->open_tab == 3 || view->open_tab == 1 ? 2 : view->open_tab == 2 ? 1 : 0; // by name, see `trainer open`
-    if (view->open_tab == 8) p.mode = 3; // the trick line section of the Tune tab
-    if (view->open_tab >= 4 && view->open_tab < 7) p.mode = std::clamp(view->open_tab - 4, 0, 2);
+    switch (view->open_tab) {
+    case 1: p.tab = 2; break;
+    case 2: p.tab = 4; p.tools_tab = 0; break;
+    case 3: p.tab = 4; p.tools_tab = 1; break;
+    case 5: case 8: p.tab = 3; break;
+    case 6: case 10: p.tab = 1; break;
+    case 7: p.tab = 4; p.tools_tab = 0; break; // legacy camera route
+    default: p.tab = 0; break;
+    }
     p.show_page = true;
     return true;
 }
@@ -947,23 +997,12 @@ bool trainer_page_wanted() {
 void trainer_page(SkateMenu &menu, const Model &model, const CallbacksV3 &callbacks) {
     auto &p = page();
     const auto view = trainer::view();
-    // A guest under the host's physics would only wipe a setup they cannot see at work here.
-    ImGui::BeginDisabled(!callbacks.queue_console_command || view->session_enforced);
-    if (ImGui::Button("RESET EVERYTHING")) {
-        p.hippy_editing = p.nocomply_editing = p.boneless_editing = p.offboard_editing = p.flip_editing = p.pump_editing = p.revert_editing = false;
-        p.trick_editing = {};
-        trainer_command(menu, callbacks, "reset everything");
+    const int restrictions = (view->session_enforced ? 1 : 0) | (view->boosts_blocked ? 2 : 0) | (!view->editable ? 4 : 0);
+    if (p.map != view->map || p.restrictions != restrictions) {
+        p.map = view->map; p.restrictions = restrictions; p.active.clear(); p.confirm_reset = p.confirm_tricks = false;
+        p.confirm_delete.clear(); p.confirm_save.clear(); ImGui::ClearActiveID();
     }
-    tip("Puts back every value, lock, preset, dial, trick setting: the game exactly as it shipped.");
-    ImGui::EndDisabled();
-    if (view->session_enforced && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        wrapped_tooltip("%s", "Off in this multiplayer game: the host controls physics here. Your own setup is kept for when you leave.");
-    ImGui::SameLine();
-    ImGui::AlignTextToFramePadding();
-    if (view->session_enforced) ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "HOST'S PHYSICS: your own setup is kept for when you leave.");
-    else if (view->ready && view->stock) ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.45f, 1.0f), "STOCK: the game is exactly as it shipped. Nothing of the trainer's is on.");
-    else if (view->ready) ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "MODIFIED: this button puts back every value, lock, preset and trick slider.");
-    else ImGui::TextDisabled("The game as it shipped: every value, lock, preset and trick slider.");
+    note(view->ready ? (view->stock ? "Stock setup. No trainer changes are active." : std::format("Custom setup: {} physics values changed. Save it in Presets.", view->touched).c_str()) : view->status.c_str());
     // `preset export` leaves its line here; the clipboard belongs to this thread.
     if (!p.share_seen) {
         p.share_seen = true;
@@ -972,25 +1011,31 @@ void trainer_page(SkateMenu &menu, const Model &model, const CallbacksV3 &callba
         p.share_serial = view->share_serial;
         ImGui::SetClipboardText(view->share_text.c_str());
     }
-    // Above the tabs, so every tab says why its controls do nothing in this session.
     if (view->session_enforced) {
-        begin_card(menu, "session-note", "MULTIPLAYER: THE HOST CONTROLS PHYSICS");
-        warn("You are in a multiplayer game where the host controls physics. This menu will not work in this multiplayer game.");
-        note("You skate with the host's setup. HUD and markers still work. Your own setup comes back when you leave.");
-        end_card();
+        warn("The host controls physics in this session.");
+        note("Your setup is kept for when you leave. HUD and practice markers remain available.");
     } else if (view->boosts_blocked) {
-        begin_card(menu, "session-note", "MULTIPLAYER: BOOSTS ARE OFF");
-        warn("The host has turned boosts off in this multiplayer game: trick sliders, flip speed, auto push and the board bending boost will not work here.");
-        note("The physics values still apply. The rest comes back when the host allows boosts or you leave.");
-        end_card();
+        warn("The host has disabled boosts.");
+        note("Physics values still work. Board flip, catch, pumping and boost options are unavailable until the host allows them or you leave.");
     }
-    category_tabs(menu, p.tab, {"TUNE", "PRACTICE", "MAP & HUD"}, "trainer-tabs");
+    const auto old_tab = p.tab;
+    workshop_navigation(menu, p.tab, {"FEEL", "SETTINGS", "PRESETS", "FUN", "TOOLS"}, "trainer-tabs");
+    if (old_tab != p.tab) { p.active.clear(); p.confirm_tricks = false; p.confirm_reset = false; p.confirm_save.clear(); p.confirm_delete.clear(); ImGui::ClearActiveID(); }
     ImGui::PushID(p.tab);
     ImGui::BeginChild("trainer-tab", ImVec2(0, page_body_height(menu)));
-    switch (p.tab) {
-    case 0: tune_tab(menu, model, callbacks, p, *view); break;
-    case 1: practice_tab(menu, model, callbacks, p, *view); break;
-    default: map_tab(menu, callbacks, p, *view); break;
+    if (!view->ready && p.tab < 4) note(view->status.c_str());
+    else {
+        if (!view->editable && p.tab < 4) warn(view->blocked.c_str());
+        switch (p.tab) {
+        case 0: workshop_feel(menu, callbacks, p, *view); break;
+        case 1: workshop_settings(menu, callbacks, p, *view); break;
+        case 2: workshop_presets(menu, callbacks, p, *view); break;
+        case 3: workshop_fun(menu, model, callbacks, p, *view); break;
+        default:
+            workshop_navigation(menu, p.tools_tab, {"PRACTICE", "MAP & HUD"}, "trainer-tools");
+            if (p.tools_tab == 0) practice_tab(menu, model, callbacks, p, *view);
+            else map_tab(menu, callbacks, *view);
+        }
     }
     ImGui::EndChild();
     ImGui::PopID();

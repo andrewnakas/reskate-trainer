@@ -1,5 +1,6 @@
 #pragma once
 
+#include "trainer_physics_policy.h"
 #include <array>
 #include <cstdint>
 #include <string_view>
@@ -12,10 +13,12 @@ namespace dingosdk::trainer {
 // that sets the pop reads it, and it works for every trick (EnumGS.Anim.CurrentFlipTrick says
 // which one is turning).
 struct FlipState {
+    physics_policy::FlipOwner owner{}; // the skater, page block and resolved state handles
     std::uintptr_t speed_at{}; // where the live flip speed is; 0: not found
     std::uint32_t trick{};     // CurrentFlipTrick
     float speed{};
     explicit operator bool() const noexcept { return speed_at != 0; }
+    physics_policy::FlipObservation observation() const noexcept { return {owner, trick, speed}; }
 };
 FlipState read_flip_state(std::uintptr_t base, std::uintptr_t entity) noexcept;
 // The state objects are loaded with a level: the memory search (trainer_classes.cpp) hands
@@ -24,6 +27,7 @@ void find_state_objects(std::uintptr_t start, std::size_t size) noexcept;
 bool flip_states_found() noexcept;
 // The skater's pages of game states (0 where there is none).
 std::array<std::uintptr_t, 6> state_pages(std::uintptr_t base, std::uintptr_t entity) noexcept;
+// Re-resolves the owner and both handles, and refuses an observation that has changed.
 bool write_flip_speed(const FlipState &state, float speed) noexcept;
 
 // Pumping a transition, as the game's trick scripts see it: whether the skater counts as pumping

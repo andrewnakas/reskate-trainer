@@ -92,10 +92,18 @@ int main() {
         check(refused(std::vector<std::uint8_t>(dingosdk::max_physics_extras + 1, 1)), "more than a session carries is refused");
     }
 
+    // A large but valid typed multiplier must survive the trip unchanged.
+    {
+        auto valid = bytes;
+        poke<float>(valid, numbers_at, 50.0f);
+        const auto shared = decode_session_extras(valid);
+        check(shared && shared->flip_speed == 50.0f, "valid typed flip speed is preserved above the slider's end");
+    }
+
     // Values no trainer holds are brought into range rather than handed to the game.
     {
         auto wild = bytes;
-        poke<float>(wild, numbers_at, 50.0f);          // flip speed
+        poke<float>(wild, numbers_at, flip_high * 2.0f);          // flip speed
         poke<float>(wild, numbers_at + 4, 1.0e9f);     // hippy jump height
         poke<float>(wild, numbers_at + 8, -3.0f);      // no comply height
         poke<float>(wild, numbers_at + 20, 5000.0f);   // auto push speed

@@ -1,3 +1,6 @@
+add_library(dingosdk_trainer_feel STATIC Extension/Trainer/trainer_feel.cpp)
+target_include_directories(dingosdk_trainer_feel PUBLIC "${PROJECT_SOURCE_DIR}")
+
 add_library(dingosdk_overlay STATIC
 
     Extension/UI/Overlay/overlay.cpp
@@ -35,7 +38,7 @@ add_library(dingosdk_overlay STATIC
     Extension/Trainer/trainer_page.cpp
     Extension/Trainer/trainer_view.cpp
 )
-target_link_libraries(dingosdk_overlay PUBLIC dingosdk_logging dingosdk_profiler dingosdk_imgui dingosdk_hooks dingosdk_console_core dxguid PRIVATE hid cfgmgr32 shell32 dingosdk_initfs dingosdk_custom_scripts dingosdk_game_archives dingosdk_mods dingosdk_json windowscodecs ole32)
+target_link_libraries(dingosdk_overlay PUBLIC dingosdk_trainer_feel dingosdk_logging dingosdk_profiler dingosdk_imgui dingosdk_hooks dingosdk_console_core dxguid PRIVATE hid cfgmgr32 shell32 dingosdk_initfs dingosdk_custom_scripts dingosdk_game_archives dingosdk_mods dingosdk_json windowscodecs ole32)
 
 # The window shown from the moment ReSkate loads until the game's own window appears.
 add_library(dingosdk_startup_window STATIC Extension/UI/Startup/startup_window.cpp)

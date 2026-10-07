@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased — Feel workshop
+
+- Reorganize PHYSICS into Feel, Settings, Presets, Fun and Tools. Keep existing
+  practice, map, telemetry and Skate 3 reference controls in their corresponding sections.
+- Add Hardcore, Authentic, Stock, Accessible and Arcade references with a continuous
+  stock-relative preview and explicit Apply. Respect direct and inherited locks and keep
+  unrelated edits. Hardcore starts at 0.1x grind capture, 1.4x friction and 0.75x grind pop.
+- Use full-width precise editors: labels above controls, commit after editing, Escape to
+  cancel, and responsive layouts at narrow widths and larger UI scales. Keep 0.4.3's
+  board-flip, catch and pump controls in Feel, with timed-catch priority over stored speeds.
+- Lead Fun with Tricklining and reverts, then Jump heights and all 23 quick shortcuts
+  in six collapsible categories. Add readable descriptions, ON/OFF states and active counts.
+  Keep board bending in one place and replace inferred extras state with Apply/Restore actions.
+- Review saved presets before applying; confirm replacement/deletion and broad resets.
+  Preserve existing libraries and unknown imported keys. Bound imports and atomically
+  replace profiles without deleting the last good save first.
+- Publish coherent owner-bound Push, Pump and Revert commands, revalidate flip ownership
+  before writes and keep reduced push targets within their current ceiling.
+- Add native ImGui interaction/layout, Feel, physics-policy and preset/storage regressions.
+  Fix the session-extras test stimulus while retaining valid 50x flip-speed support.
+
 ## v0.4.3 - 2026-10-07
 
 Built on ReSkate 1.1.4 (0.4.2 was built on 1.1.3). The trainer itself is unchanged.

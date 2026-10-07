@@ -30,8 +30,10 @@ template <class T> bool peek(std::uintptr_t address, T &value) noexcept {
         return true;
     } __except (1) { return false; }
 }
-bool put(std::uintptr_t address, float value) noexcept {
+bool put(std::uintptr_t address, float expected, float value) noexcept {
     __try {
+        // Do not overwrite a fresh value supplied by the game after the ownership re-read.
+        if (*reinterpret_cast<const volatile float *>(address) != expected) return false;
         *reinterpret_cast<volatile float *>(address) = value;
         return true;
     } __except (1) { return false; }
@@ -69,7 +71,7 @@ bool is_object(const StateObject &object, std::uintptr_t id_at) noexcept {
     } __except (1) { return false; }
 }
 // Where the skater's value of that state is; 0 when it has none.
-std::uintptr_t value_address(StateObject &object, std::uintptr_t block) noexcept {
+std::uintptr_t value_address(StateObject &object, std::uintptr_t block, std::uint32_t *observed_handle = nullptr) noexcept {
     const auto at = object.at.load(std::memory_order_relaxed);
     if (!at) return 0;
     if (!is_object(object, at - object_after_id)) {
@@ -83,6 +85,7 @@ std::uintptr_t value_address(StateObject &object, std::uintptr_t block) noexcept
     if (index >= 16 || !peek(block + block_pages + index * 8, page) || !pointer(page) || !peek(page + page_map + (place >> 5) * 4, map) ||
         !(map >> (place & 31) & 1))
         return 0;
+    if (observed_handle) *observed_handle = handle;
     return page + place;
 }
 std::uintptr_t states_block(std::uintptr_t base, std::uintptr_t entity) noexcept {
@@ -150,11 +153,17 @@ FlipState read_flip_state(std::uintptr_t base, std::uintptr_t entity) noexcept {
     const auto block = states_block(base, entity);
     if (!block) return {};
     FlipState state;
-    const auto speed_at = value_address(flip_speed_object, block), trick_at = value_address(flip_trick_object, block);
+    const auto speed_at = value_address(flip_speed_object, block, &state.owner.speed_handle);
+    const auto trick_at = value_address(flip_trick_object, block, &state.owner.trick_handle);
     if (!speed_at || !trick_at || !peek(trick_at, state.trick) || !peek(speed_at, state.speed)) return {};
     // Anything else there means this is not the layout this was written for.
     if (state.trick >= trick_count || !std::isfinite(state.speed) || state.speed < 0 || state.speed > 1000) return {};
-    state.speed_at = speed_at;
+    if (states_block(base, entity) != block) return {};
+    state.owner.base = base;
+    state.owner.entity = entity;
+    state.owner.block = block;
+    state.owner.speed_at = state.speed_at = speed_at;
+    state.owner.trick_at = trick_at;
     return state;
 }
 PumpState read_pump_state(std::uintptr_t base, std::uintptr_t entity) noexcept {
@@ -180,7 +189,10 @@ std::array<std::uintptr_t, 6> state_pages(std::uintptr_t base, std::uintptr_t en
     return pages;
 }
 bool write_flip_speed(const FlipState &state, float speed) noexcept {
-    return state && std::isfinite(speed) && put(state.speed_at, speed);
+    if (!state || !physics_policy::flip_speed_valid(speed)) return false;
+    const auto current = read_flip_state(state.owner.base, state.owner.entity);
+    return current && physics_policy::can_write_flip(state.observation(), current.observation(), speed) &&
+           put(current.speed_at, current.speed, speed);
 }
 int flip_trick_index(std::uint32_t trick) noexcept { return trick < trick_count ? trick_slider[trick] : -1; }
 std::string_view flip_trick_name(std::uint32_t trick) noexcept { return trick < trick_count ? game_trick_names[trick] : std::string_view{}; }

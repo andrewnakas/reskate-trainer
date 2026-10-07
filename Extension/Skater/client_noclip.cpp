@@ -7,10 +7,13 @@
 #include "Engine/Game/Build/20260929/no_bail.h"
 #include "Engine/Game/Build/20260929/offboard_flight.h"
 #include "free_flight.h"
+#include "Extension/Trainer/trainer_command_snapshot.h"
+#include "Extension/Trainer/trainer_physics_policy.h"
 #include <cmath>
 
 namespace dingosdk::client_source::detail {
 namespace {
+namespace policy = dingosdk::trainer::physics_policy;
 // Physics bodies already verified writable (a VirtualQuery each), so the
 // every-frame and every-simulation-step body reads below skip that system call.
 // A body at a new address, and every body once a second, is checked again.
@@ -232,29 +235,40 @@ constexpr float last_step = 0.95f;   // of the stock top pushing speed: the game
 constexpr float cruise_gain = 0.15f; // m/s each physics step: the game steers the speed back toward its own, so less does nothing
 constexpr int held_steps = 36;       // a push flagged this long is held (a tap lasts 19 steps)
 constexpr int hold_steps = 360;      // how long after a push the game holds its speed
-struct PushSpeed {
-    std::atomic<float> factor{1}, stock{9.25f}, cruise{};
+struct PushCommand {
+    float factor{1}, stock{9.25f}, cruise{};
     std::uintptr_t client{}, entity{};
-    std::atomic<ULONGLONG> expires{};
+    ULONGLONG expires{};
+};
+struct PushSpeed {
+    policy::CommandSnapshot<PushCommand> command;
     // Physics thread only.
-    int pushing{}, since_push{hold_steps};
-    bool carried{}; // a held push is being carried past the game's last step
-    float reached{}; // the speed pushing has been carried to past the game's own ceiling (0: none)
+    policy::PushCarry carry{{}, 0, hold_steps};
 };
 PushSpeed& push_speed() { static auto* value = new PushSpeed; return *value; }
 void trainer_push_speed(std::uintptr_t core) noexcept {
     auto& p = push_speed();
-    const float factor = p.factor.load(std::memory_order_relaxed), cruise = p.cruise.load(std::memory_order_relaxed);
-    if ((factor == 1 && cruise <= 0) || GetTickCount64() >= p.expires.load(std::memory_order_acquire)) return;
+    const auto command = p.command.load(); // shared lock is released before SourceState::busy or body access
+    const float factor = command.factor, cruise = command.cruise;
     const auto watch = watched_physics_state();
-    if (!watch.valid || watch.state != 100) return; // riding the ground
     SourceLastError error;
     auto& state = source_state();
     if (!state.initialized.load(std::memory_order_acquire) || state.busy.test_and_set(std::memory_order_acquire)) return;
     SourceBusyScope scope{state.busy};
+    auto &carry = p.carry;
+    if ((factor == 1 && cruise <= 0) || GetTickCount64() >= command.expires || !command.client || !command.entity ||
+        !watch.valid || watch.state != 100) { // riding the ground
+        carry.clear(hold_steps);
+        return;
+    }
     try {
-        const auto bodies = debug_noclip_bodies(state.trial.base, p.client, p.entity);
-        if (bodies.core != core || bodies.offboard || bodies.parts.empty()) return;
+        const auto bodies = debug_noclip_bodies(state.trial.base, command.client, command.entity);
+        if (!bodies.core || bodies.offboard || bodies.parts.empty()) {
+            carry.clear(hold_steps);
+            return;
+        }
+        if (policy::bind_step(carry, {command.client, command.entity, bodies.core}, core, hold_steps) ==
+            policy::StepOwnership::unrelated) return;
         SourceReader reader;
         const float target = reader.value<float>(bodies.context, 0x17f4);
         // What the game's brake code tests: a brake held (bit 2) or one squeezed by some amount (bit 1, +0x1880).
@@ -269,19 +283,19 @@ void trainer_push_speed(std::uintptr_t core) noexcept {
         }
         reader.verify();
         if (requests & 0x40u) { // the push request the game's own push code tests
-            ++p.pushing;
-            p.since_push = 0;
+            if (carry.pushing < held_steps) ++carry.pushing;
+            carry.since_push = 0;
         } else {
-            p.pushing = 0;
-            if (p.since_push < hold_steps) ++p.since_push;
+            carry.pushing = 0;
+            if (carry.since_push < hold_steps) ++carry.since_push;
         }
         const float speed = std::sqrt(velocities[0][0] * velocities[0][0] + velocities[0][2] * velocities[0][2]);
-        if (!(speed >= 0.5f) || !(speed < 1000.0f)) return;
-        const float stock = p.stock.load(std::memory_order_relaxed);
-        const bool pushed = target > 0.5f && target < 100.0f && p.since_push < hold_steps; // the game is holding a push speed
+        if (!(speed >= 0.5f) || !(speed < 1000.0f)) { carry.clear(hold_steps); return; }
+        const float stock = command.stock;
+        const bool pushed = target > 0.5f && target < 100.0f && carry.since_push < hold_steps; // the game is holding a push speed
         const bool at_last_step = pushed && target >= stock * last_step && speed >= target * 0.9f;
-        if (braking || !at_last_step) p.carried = false;
-        else if (p.pushing >= held_steps) p.carried = true;
+        if (braking || !at_last_step) carry.carried = false;
+        else if (carry.pushing >= held_steps) carry.carried = true;
         float change = 0;
         // The push class's speeds (the trainer raises those) are what a push aims for, but the
         // game's speed model settles near 10 to 11 m/s however high they are (measured with them at
@@ -289,13 +303,14 @@ void trainer_push_speed(std::uintptr_t core) noexcept {
         // carried on here, at the game's own gain, to the stock ceiling x factor, and that speed
         // is kept for as long as the game keeps a pushed speed.
         const float ceiling = stock * factor;
-        if (braking || factor <= 1 || p.since_push >= hold_steps || speed < stock * 0.85f) p.reached = 0;
+        carry.reached = policy::bound_reached(carry.reached, ceiling);
+        if (braking || factor <= 1 || carry.since_push >= hold_steps || speed < stock * 0.85f) carry.reached = 0;
         if (braking) {
-        } else if (factor > 1 && p.pushing > 0 && speed >= stock * 0.85f && speed < ceiling) {
+        } else if (factor > 1 && carry.pushing > 0 && speed >= stock * 0.85f && speed < ceiling) {
             change = std::min(push_gain, ceiling - speed);
-            p.reached = std::max(p.reached, speed + change);
-        } else if (factor > 1 && p.reached > speed && p.since_push < hold_steps) {
-            change = std::min(push_gain, p.reached - speed);
+            carry.reached = std::max(carry.reached, speed + change);
+        } else if (factor > 1 && carry.reached > speed && carry.since_push < hold_steps) {
+            change = policy::carry_gain(carry, speed, ceiling, push_gain);
         } else if (pushed && factor < 1 && speed > target * factor && speed <= target * 1.1f) {
             change = -std::min(push_gain, speed - target * factor); // pushed speed only: a hill's is faster than the target
         } else if (cruise > 0 && speed >= 1.0f && speed < cruise) {
@@ -310,7 +325,7 @@ void trainer_push_speed(std::uintptr_t core) noexcept {
             body_write(bodies.parts[i] + 0x70, velocities[i]);
             body_write(bodies.parts[i] + 0x60, flags[i] | 8u);
         }
-    } catch (...) {}
+    } catch (...) { carry.clear(hold_steps); }
 }
 // ---- pump power --------------------------------------------------------------------------------
 // What a pump gains, times a factor. The game's trick scripts decide when the skater is pumping
@@ -327,34 +342,46 @@ void trainer_push_speed(std::uintptr_t core) noexcept {
 constexpr float pump_gravity = 9.81f; // m/s2, as flights measure it
 constexpr float pump_rate = 0.03f;    // m/s each physics step
 constexpr float pump_step = 3.0f;     // m/s the trainer may add or take in one physics step
-struct PumpPower {
-    std::atomic<float> factor{1};
-    std::atomic<bool> pumping{}, measure{};
+struct PumpCommand {
+    float factor{1};
+    bool pumping{}, measure{};
     std::uintptr_t client{}, entity{};
-    std::atomic<ULONGLONG> expires{};
+    ULONGLONG expires{};
+};
+struct PumpPower {
+    policy::CommandSnapshot<PumpCommand> command;
     std::atomic<std::uint32_t> pumps{};
     std::atomic<float> gained{}, given{}, speed{};
     std::atomic<std::uint32_t> steps{};
     // Physics thread only.
-    std::uint32_t count{};
-    bool primed{}, running{};
-    float energy{}, sum{}, credit{};
+    policy::PumpAccumulator accumulated;
 };
 PumpPower& pump_power() { static auto* value = new PumpPower; return *value; }
 void trainer_pump_power(std::uintptr_t core) noexcept {
     auto& p = pump_power();
-    const float factor = p.factor.load(std::memory_order_relaxed);
-    const auto stop = [&] { p.primed = p.running = false; };
-    if ((factor == 1 && !p.measure.load(std::memory_order_relaxed)) || GetTickCount64() >= p.expires.load(std::memory_order_acquire)) return stop();
+    const auto command = p.command.load(); // coherent publication, with no mailbox lock during game memory access
+    const float factor = command.factor;
     const auto watch = watched_physics_state();
-    if (!watch.valid || (watch.state != 100 && watch.state != 103)) return stop(); // riding, standing or crouched
     SourceLastError error;
     auto& state = source_state();
     if (!state.initialized.load(std::memory_order_acquire) || state.busy.test_and_set(std::memory_order_acquire)) return;
     SourceBusyScope scope{state.busy};
+    auto &accumulated = p.accumulated;
+    const auto clear_report = [&] {
+        p.gained.store(0, std::memory_order_relaxed);
+        p.given.store(0, std::memory_order_relaxed);
+        p.speed.store(0, std::memory_order_relaxed);
+        p.steps.store(0, std::memory_order_relaxed);
+    };
+    const auto stop = [&] { accumulated.clear(); clear_report(); };
+    if ((factor == 1 && !command.measure) || GetTickCount64() >= command.expires || !command.client || !command.entity ||
+        !watch.valid || (watch.state != 100 && watch.state != 103)) return stop(); // riding, standing or crouched
     try {
-        const auto bodies = debug_noclip_bodies(state.trial.base, p.client, p.entity);
-        if (bodies.core != core || bodies.offboard || bodies.parts.empty()) return stop();
+        const auto bodies = debug_noclip_bodies(state.trial.base, command.client, command.entity);
+        if (!bodies.core || bodies.offboard || bodies.parts.empty()) return stop();
+        const auto ownership = policy::bind_step(accumulated, {command.client, command.entity, bodies.core}, core);
+        if (ownership == policy::StepOwnership::unrelated) return;
+        if (ownership == policy::StepOwnership::changed) clear_report();
         SourceReader reader;
         std::array<std::array<float, 3>, 32> velocities{};
         std::array<std::uint32_t, 32> flags{};
@@ -369,26 +396,26 @@ void trainer_pump_power(std::uintptr_t core) noexcept {
         const float height = bodies.root[1];
         if (!(speed >= 1.0f) || !(speed < 1000.0f) || !std::isfinite(height)) return stop();
         const float energy = 0.5f * squared + pump_gravity * height;
-        if (!p.primed || !p.pumping.load(std::memory_order_relaxed)) { // coasting: only keep up
-            p.primed = true;
-            p.running = false;
-            p.energy = energy;
+        if (!accumulated.primed || !command.pumping) { // coasting: only keep up
+            accumulated.primed = true;
+            accumulated.running = false;
+            accumulated.energy = energy;
             return;
         }
-        if (!p.running) {
-            p.running = true;
-            p.sum = p.credit = 0;
-            p.count = 0;
+        if (!accumulated.running) {
+            accumulated.running = true;
+            accumulated.sum = accumulated.credit = 0;
+            accumulated.count = 0;
             p.pumps.fetch_add(1, std::memory_order_relaxed);
         }
-        const float step = energy - p.energy;
-        p.energy = energy;
+        const float step = energy - accumulated.energy;
+        accumulated.energy = energy;
         if (std::abs(step) > speed * 2.0f + 2.0f) return; // a teleport or a hit, not a pump
-        p.sum += step;
+        accumulated.sum += step;
         float change = 0;
         if (factor != 1) change = std::clamp((factor - 1) * pump_rate, -pump_step, pump_step);
         if (speed + change < 1.0f || speed + change > 300.0f) change = 0;
-        ++p.count;
+        ++accumulated.count;
         if (std::abs(change) >= 0.002f) {
             const float scale = (speed + change) / speed;
             // Like the native velocity writers: XYZ at +70 and the dirty bit 8 at +60.
@@ -398,14 +425,14 @@ void trainer_pump_power(std::uintptr_t core) noexcept {
                 body_write(bodies.parts[i] + 0x60, flags[i] | 8u);
             }
             const float given = 0.5f * ((speed + change) * (speed + change) - squared);
-            p.credit += given;
-            p.energy += given; // the trainer's own share is not the game's gain
+            accumulated.credit += given;
+            accumulated.energy += given; // the trainer's own share is not the game's gain
         }
-        p.gained.store(p.sum, std::memory_order_relaxed);
-        p.given.store(p.credit, std::memory_order_relaxed);
+        p.gained.store(accumulated.sum, std::memory_order_relaxed);
+        p.given.store(accumulated.credit, std::memory_order_relaxed);
         p.speed.store(speed, std::memory_order_relaxed);
-        p.steps.store(p.count, std::memory_order_relaxed);
-    } catch (...) {}
+        p.steps.store(accumulated.count, std::memory_order_relaxed);
+    } catch (...) { stop(); }
 }
 // ---- revert boost ------------------------------------------------------------------------------
 // When the game auto reverts a landing the board is still well out of line with the body and the
@@ -429,40 +456,45 @@ float revert_boost_amount(const RevertTuning &t, float board_rotation) {
     if (board_rotation > 140.0f) return t.auto_boost;
     return t.bend_boost + (t.full_boost - t.bend_boost) * std::clamp((board_rotation - 40.0f) / 320.0f, 0.0f, 1.0f);
 }
-struct RevertBoost {
-    std::atomic<float> strength{}; // 0: off
+struct RevertCommand {
+    float strength{}; // 0: off
     std::uintptr_t client{}, entity{};
-    std::atomic<ULONGLONG> expires{};
-    SRWLOCK report_lock = SRWLOCK_INIT; // the report and the tuning
-    RevertBoostReport report;
+    ULONGLONG expires{};
     RevertTuning tuning;
+};
+struct RevertBoost {
+    policy::CommandSnapshot<RevertCommand> command;
+    SRWLOCK report_lock = SRWLOCK_INIT; // the report only; never held with the command mailbox
+    RevertBoostReport report;
     // Physics thread only.
-    bool primed{};          // the landing count has been read once since the boost was switched on
-    std::uint64_t seen{};   // the last landing handled
-    ULONGLONG cooldown_until{};
+    policy::RevertHistory history;
 };
 RevertBoost& revert_boost() { static auto* value = new RevertBoost; return *value; }
 void trainer_revert_boost(std::uintptr_t core) noexcept {
     auto& r = revert_boost();
-    const float strength = r.strength.load(std::memory_order_relaxed);
+    const auto command = r.command.load(); // release the mailbox lock before SourceState::busy/body access
+    const float strength = command.strength;
     const auto now = GetTickCount64();
-    if (!(strength > 0) || now >= r.expires.load(std::memory_order_acquire)) {
-        r.primed = false; // nothing is read while it is off
-        return;
-    }
     SourceLastError error;
     auto& state = source_state();
     if (!state.initialized.load(std::memory_order_acquire) || state.busy.test_and_set(std::memory_order_acquire)) return;
     SourceBusyScope scope{state.busy};
+    auto &history = r.history;
+    if (!(strength > 0) || now >= command.expires || !command.client || !command.entity) {
+        history.clear(); // neither a landing nor its cooldown survives an inactive command
+        return;
+    }
     try {
-        const auto bodies = debug_noclip_bodies(state.trial.base, r.client, r.entity);
-        if (bodies.core != core || bodies.parts.empty()) return;
+        const auto bodies = debug_noclip_bodies(state.trial.base, command.client, command.entity);
+        if (!bodies.core || bodies.parts.empty()) { history.clear(); return; }
+        if (policy::bind_step(history, {command.client, command.entity, bodies.core}, core) ==
+            policy::StepOwnership::unrelated) return;
         SourceReader reader;
         const auto selector = reader.pointer(bodies.core, 0x440);
         source_require(reader.pointer(selector, 8) == bodies.context, "Skater physics selector changed.");
         // The skater's world matrix, where debug_skater reads it.
-        const auto collection = reader.pointer(r.entity, 0x70);
-        source_require(reader.pointer(collection) == r.entity, "Skater transform owner changed.");
+        const auto collection = reader.pointer(command.entity, 0x70);
+        source_require(reader.pointer(collection) == command.entity, "Skater transform owner changed.");
         const auto first = reader.value<std::uint8_t>(collection, 9), extra = reader.value<std::uint8_t>(collection, 10);
         source_require(reader.value<std::uint8_t>(collection, 8) <= 128 && first <= 128 && extra <= 32, "Skater transform layout changed.");
         std::array<std::array<float, 3>, 32> velocities{};
@@ -475,16 +507,8 @@ void trainer_revert_boost(std::uintptr_t core) noexcept {
         reader.verify();
         watch_revert_spin(selector, collection + std::uintptr_t{0x10} + (std::uintptr_t{first} + 2 * std::uintptr_t{extra}) * 0x20, bodies.parts[0]);
         const auto landing = last_revert_landing();
-        AcquireSRWLockShared(&r.report_lock);
-        const auto t = r.tuning;
-        ReleaseSRWLockShared(&r.report_lock);
-        if (!r.primed) { // landings from before it was switched on are not ours
-            r.primed = true;
-            r.seen = landing.sequence;
-            return;
-        }
-        if (landing.sequence == r.seen) return;
-        r.seen = landing.sequence;
+        const auto &t = command.tuning;
+        if (!history.accept(landing.sequence)) return;
         float board_offset = std::fmod(std::abs(landing.board_offset_degrees), 180.0f);
         board_offset = std::min(board_offset, 180.0f - board_offset); // 0: lined up, forward or fakie
         const float spin = std::abs(landing.spin_degrees);
@@ -506,7 +530,7 @@ void trainer_revert_boost(std::uintptr_t core) noexcept {
             : landing.to < 100 || landing.to >= 200 || bodies.offboard ? "no boost: not riding"
             : now < landing.landed_at || now - landing.landed_at > revert_max_age_ms ? "no boost: seen too late"
             : static_cast<float>(landing.air_ms) < t.min_air * 1000.0f ? "no boost: too short a flight"
-            : now < r.cooldown_until ? "no boost: too soon after the last"
+            : now < history.cooldown_until ? "no boost: too soon after the last"
             : !std::isfinite(speed) || speed < 1.0f || !(added > 0.005f) ? "no boost: standing still or already at the speed limit"
             : "boost";
         const bool fire = std::string_view(outcome) == "boost";
@@ -523,8 +547,8 @@ void trainer_revert_boost(std::uintptr_t core) noexcept {
             body_write(bodies.parts[i] + 0x70, velocities[i]);
             body_write(bodies.parts[i] + 0x60, flags[i] | 8u);
         }
-        r.cooldown_until = now + static_cast<ULONGLONG>(std::clamp(t.cooldown, 0.0f, 60.0f) * 1000.0f);
-    } catch (...) {}
+        history.cooldown_until = now + static_cast<ULONGLONG>(std::clamp(t.cooldown, 0.0f, 60.0f) * 1000.0f);
+    } catch (...) { history.clear(); }
 }
 void noclip_physics_update(std::uintptr_t core) {
     const auto original = source_state().velocity_update_original.load(std::memory_order_acquire);
@@ -616,21 +640,12 @@ bool queue_jump_scale(std::uintptr_t client, std::uintptr_t entity, float factor
 }
 void set_push_speed(std::uintptr_t client, std::uintptr_t entity, float factor, float stock, float cruise) noexcept {
     auto& p = push_speed();
-    p.client = client;
-    p.entity = entity;
-    p.cruise.store(cruise > 0 && cruise < 100 ? cruise : 0.0f, std::memory_order_relaxed);
-    p.stock.store(stock > 1 && stock < 100 ? stock : 9.25f, std::memory_order_relaxed);
-    p.factor.store(factor > 0.02f && factor <= 1.0e6f ? factor : 1.0f, std::memory_order_relaxed);
-    p.expires.store(GetTickCount64() + 500, std::memory_order_release);
+    p.command.store({policy::push_factor(factor), policy::push_stock(stock), policy::cruise_speed(cruise),
+                     client, entity, GetTickCount64() + 500});
 }
 void set_pump_power(std::uintptr_t client, std::uintptr_t entity, float factor, bool pumping, bool measure) noexcept {
     auto& p = pump_power();
-    p.client = client;
-    p.entity = entity;
-    p.factor.store(factor >= 0 && factor <= 1.0e6f ? factor : 1.0f, std::memory_order_relaxed);
-    p.pumping.store(pumping, std::memory_order_relaxed);
-    p.measure.store(measure, std::memory_order_relaxed);
-    p.expires.store(GetTickCount64() + 500, std::memory_order_release);
+    p.command.store({policy::pump_factor(factor), pumping, measure, client, entity, GetTickCount64() + 500});
 }
 PumpPowerReport pump_power_report() noexcept {
     auto& p = pump_power();
@@ -639,13 +654,10 @@ PumpPowerReport pump_power_report() noexcept {
 }
 void set_revert_boost(std::uintptr_t client, std::uintptr_t entity, float strength, const RevertTuning &tuning) noexcept {
     auto& r = revert_boost();
-    AcquireSRWLockExclusive(&r.report_lock);
-    r.tuning = tuning;
-    ReleaseSRWLockExclusive(&r.report_lock);
-    r.client = client;
-    r.entity = entity;
-    r.strength.store(std::isfinite(strength) && strength > 0 ? std::min(strength, 1000.0f) : 0.0f, std::memory_order_relaxed);
-    r.expires.store(GetTickCount64() + 500, std::memory_order_release);
+    const bool valid = policy::finite_values({tuning.min_spin, tuning.min_slip, tuning.min_twist, tuning.bend_boost, tuning.full_boost,
+                                             tuning.auto_boost, tuning.max_speed, tuning.cooldown, tuning.min_air});
+    r.command.store({valid ? policy::revert_strength(strength) : 0.0f, client, entity, GetTickCount64() + 500,
+                     valid ? tuning : RevertTuning{}});
 }
 RevertBoostReport revert_boost_report() noexcept {
     auto& r = revert_boost();

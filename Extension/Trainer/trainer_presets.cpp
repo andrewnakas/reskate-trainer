@@ -1,4 +1,5 @@
 #include "trainer_presets.h"
+#include "trainer_feel.h"
 
 #include <algorithm>
 #include <array>
@@ -257,7 +258,8 @@ std::vector<PresetRule> skate3_rules(std::span<const Skate3Value> difficulty) {
 // (run `trainer dump` for the list), so a preset reaches every value a pattern names in
 // whatever build is running and simply skips the ones that build lacks.
 const std::vector<BuiltinPreset> &builtin_presets() {
-    static const std::vector<BuiltinPreset> presets{
+    static const std::vector<BuiltinPreset> presets = [] {
+    std::vector<BuiltinPreset> result{
         // Rules name values the game was found to read (trainer_used.inc) or linked values
         // (value_links). Jump height comes from the PhysicsJump height graphs; body flips
         // from FlipScalar and FlipMaxSpeed unless PerfectBodyFlips forces exactly one rotation;
@@ -330,6 +332,10 @@ const std::vector<BuiltinPreset> &builtin_presets() {
          skate3_rules(skate3_hardcore)},
         {"Skate 3 Easy", "Skate 3 on Easy: full-height pops, strong pushes, generous grind lock-on.", skate3_rules(skate3_easy)},
     };
+    const auto &profiles = workshop::presets();
+    result.insert(result.end(), profiles.begin(), profiles.end());
+    return result;
+    }();
     return presets;
 }
 } // namespace dingosdk::trainer

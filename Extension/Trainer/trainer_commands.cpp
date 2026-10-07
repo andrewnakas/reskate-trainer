@@ -12,13 +12,15 @@ void register_trainer_commands(Commands &registry) {
     };
     const Verb verbs[]{
         {"status", "What the trainer is doing", nullptr, false},
-        {"open", "Open the menu on the trainer page", "[tune|presets|practice|map|realistic|fun|everything]", false},
+        {"open", "Open the menu on the trainer page", "[feel|settings|presets|fun|practice|camera|map]", false},
         {"set", "Set a physics tuning value live", "<value id> <number>", true},
         {"freeze", "Keep a value through presets and resets", "<value id> 0|1", true},
         {"reset", "Put a value (or all) back to stock", "<value id>|all", false},
         {"find", "List tuning values whose id contains the words", "<words>", false},
         {"preset", "Apply, remove, save or delete a preset", "apply|remove|save|delete|export <name> | import [file]", false},
         {"revert", "What counts as a revert and what its speed boost is worth", "<field> <number> | reset", false},
+        {"workshop", "Apply a curated stock-relative feel", "Hardcore|Authentic|Stock|Accessible|Arcade|-1..1", false},
+        {"assist", "Grind capture distance multiplier", "0.1..5", false},
         {"feel", "Which game the skating plays like", "stock|easy|normal|hardcore", false},
         {"trickline", "Skate 3's tricklining extras: the board bending boost and heavier revert friction", "extras on|off", false},
         {"dial", "Turn a built-in preset up or down: 1 is the game's own", "<multiplier> <preset name>", false},

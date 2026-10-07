@@ -1,3 +1,4 @@
+#include <cmath>
 #include "trainer_classes.h"
 #include "trainer_gamestate.h"
 #include "Engine/Core/Log/logging.h"
@@ -696,7 +697,7 @@ void states_in_use(bool used) noexcept {
 }
 void want_flip_gate(float seconds) noexcept {
     auto &f = found();
-    if (!(seconds == seconds)) return;
+    if (!std::isfinite(seconds)) return;
     std::lock_guard lock(f.mutex);
     if (f.gate_wanted == seconds) return;
     f.gate_wanted = seconds;

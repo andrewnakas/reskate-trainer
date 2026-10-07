@@ -6,32 +6,91 @@ telemetry HUD. It ships no game data: the list of values is built at run time fr
 
 ## What it does
 
-**Flip trick speed, for all tricks or one by one.** "Flip trick speed" (TUNE > TRICKS) makes every flip trick turn slower or faster without changing your pop; "Advanced trick speed" under it gives each of 16 tricks a speed of its own. Below 1 a flip is slow from the start and is not hurried round before you land. **Give it about 15 seconds after every level load**: the trainer has to find the game's flip animations again before the speeds take hold, and the card says so while it looks.
+The PHYSICS page opens on **Feel**, with five reference points: **Hardcore, Authentic, Stock,
+Accessible and Arcade**. Choose a reference or move the mixer to preview supported controls;
+**Apply this feel** commits the result. The preview respects both direct locks and locks inherited
+from linked controls. Unrelated edits stay as they are. Stock in the mixer restores only the
+curated controls; Settings > Reset and maintenance contains the broader resets.
 
-**Pump power.** "Pump power" (TUNE > TRICKS) sizes what pumping a transition gives: 1 is the game's own, 2 is about one more of the game's pumps on top of each of yours, 10 and up is a rocket, under 1 takes speed away. The game still decides when you are pumping. Like the flip speed it needs about 15 seconds after a level load.
+- **Feel:** full-width stock-relative sliders, grouped into pop and airtime, speed and rotations,
+  landings and bails, grinds and slides, **Flips and catches**, and **Transition pumping**. The control label stays above its editor. Drag to
+  adjust; Ctrl-click or double-click to type; Enter commits and Escape cancels. Edits commit
+  when editing finishes rather than sending a command every frame.
+- **Settings:** search the complete value table, select a group, show changed or locked controls,
+  and optionally reveal unverified values and individual graph points. Labels have tooltips for
+  their complete name and description. Arbitrary values use full-width numeric drag editors.
+- **Presets:** save physics or trick-only setups, review saved inputs before applying, import and
+  share presets, or select a preset to apply when a map loads. Replacing and deleting saved
+  presets require a confirmation. Imports add to the library without applying and use a new
+  name when one is already taken. The existing Skate 3 reference presets remain available here.
+- **Fun:** Tricklining and reverts opens first, with precise momentum editors and collapsible advanced tuning. Jump heights follows; quick toggles sit below in six collapsible categories, with visible descriptions, ON/OFF states and active counts. Never bail stays in Skater > Movement.
+- **Tools:** Practice and Map & HUD. Practice has game speed, five marker slots per map,
+  bail returns and teleport. Map & HUD has telemetry, CSV recording and map recommendations.
+  The unreliable trainer camera controls were retired upstream in 0.4.2.
 
-| Tab | What you get |
-|---|---|
-| **TUNE** | Four lists: REALISTIC, FUN, TRICKLINING and EVERYTHING. TRICKLINING gathers what a line needs: the board bending boost (speed out of a landing with the board out of line, as in Skate 3) with its rules, revert and powerslide friction, pumping, pops, spins and flips, manuals and grinds, each with a line on what it is for. Each opens on the dials: every built-in preset as one slider (Ollie height, pop out of grinds, on-board gravity, landings, revert friction, Push speed, Body flip and spin speed, Bail resistance, Grind lock-on and friction, on-foot jump and sprint, glide, torpedo), where 1 is the game's own and the preset's button jumps to the preset; then the switches (Auto Push, No Speed Wobble, Smooth Surfaces, Long Wheelbase, Never bail), the trick sliders (flip trick speed, pump power, no comply, boneless, hippy and off-board jump height, and a revert speed boost: speed back on a landing the game auto reverts, from AutoRevertBoost by Sivaes, jaq and OVM) and the values themselves: a short plainly named list, or under EVERYTHING the whole table (the physics tuning's values, one multiplier per curve and graph, and the 314 values of the game's other tuning classes) with groups, "only what I changed" and locks. One search box finds dials, trick sliders and values on every list; pointing at a named value says what it does. The built-in presets include Skate 3 (and its Hardcore and Easy): Skate 3's numbers for every value this game still shares with it. Changes apply while you skate. Values the game was never found or seen reading are hidden unless you ask for them. **Reset everything**, above the tabs, puts the game back as it shipped. |
-| **PRACTICE** | Game speed and pause, five marker slots per map (save / go / clear), return to the marker after a bail, teleport to coordinates, copy your position (game or Blender axes). |
-| **MAP & HUD** | Speed and air-time HUD, a read-out after every jump (takeoff speed and angle, height, distance, drop, landing speed, spin and flip), telemetry recording to CSV, and whatever the map's author ships for the trainer. At the bottom, the whole game at once: "Play like" (skate., Skate 3 Easy, Skate 3, Skate 3 Hardcore) and your own presets: save the setup you have now under a name, turn it on and off, share it as one line of text, import one you were sent. |
+**Hardcore grinds:** rail lock-on, boardslide capture and nose/tail-slide capture use **0.1x this
+map's stock distance**. Common and curb friction
+use 1.4x stock, and grind pop heights use 0.75x stock. Entry speed and angle requirements are
+independent and stay unchanged by these rules. These profiles are starting points for playtesting;
+they are not calibrated simulations of real skating.
 
-The HUD, the jump read-out and the controller shortcuts are off until you switch them on (MAP & HUD,
-PRACTICE): a player who never opens the trainer sees and feels nothing of it.
+**Existing trainer controls:** this workshop keeps upstream 0.4.3's flip, catch and pump controls.
+Feel > Flips and catches holds the global board-flip speed, independent speeds for all sixteen
+supported tricks and automatic catch timing. Speeds combine multiplicatively; nollie uses its
+regular trick. Slow flips automatically keep the game from rushing the board before landing.
+The old slow-flip switch is retired; old saved keys still import. Timed catch takes priority
+over custom speeds without deleting them. Its estimate assumes level ground; gaps and drops
+can catch earlier, and 100% can land still flipping. It is assistance, not manual foot control.
 
-Controller: **LB + RB + click the right stick** opens and closes the menu (D-pad or left stick moves, A presses, B goes back);
-it can be switched off on PRACTICE. With the marker shortcuts switched on: hold **LB + RB**, then D-pad **up** saves the marker,
-**down** goes to it, **left / right** pick the slot.
+Feel > Transition pumping holds the real Pump power option: 1 is stock, above 1 adds speed
+while the game detects pumping, below 1 removes speed. Animation and pump discovery can take
+about 15 seconds after a map load; the controls show the pending state. Labels sit above
+full-width sliders. Ctrl-click types precisely; Enter applies and Escape cancels.
 
-Everything is also a console command (`~`): `trainer open [tune|practice|map|realistic|fun|everything]`, `trainer status`, `trainer set <id> <value>`,
-`trainer find <words>`, `trainer preset apply|remove|export <name>`, `trainer preset import`, `trainer dial <multiplier> <preset name>`,
+Fun > Jump heights contains the four jump heights. Board bending appears once, under Tricklining and reverts.
+Detailed revert rules stay under Tricklining and reverts. Ordinary 180s no longer earn bending
+speed by default: upstream migrates the old default off-travel threshold of 12 degrees to off
+(90 degrees). Custom preset values remain stored. Reset tricks now confirms that it also
+resets the flip, catch and pump options in Feel, including the default 70% catch point;
+saved presets remain in the library.
+
+Saved presets compose: applying one changes only the values it contains. Unlisted options
+keep their current settings. Review the saved values and reset trick options first when you
+want a clean comparison. A named library preset selected for a map can include trick options;
+a preset embedded by the map author currently applies only the tuning-value table.
+
+The HUD, jump read-out and marker shortcuts are off until enabled in Tools. The controller menu
+shortcut is **LB + RB + click the right stick**; it can be disabled in Practice. D-pad or left
+stick navigates, A presses and B goes back. With marker shortcuts enabled, hold **LB + RB**:
+D-pad up saves, down returns, and left/right picks a slot.
+
+Console commands (`~`) include:
+
+`trainer open [feel|settings|presets|fun|practice|map]`, `trainer status`,
+`trainer workshop <hardcore|authentic|stock|accessible|arcade|-1..1>`,
+`trainer assist <0.1..5>`, `trainer set <id> <value>`, `trainer find <words>`,
+`trainer preset apply|remove|save|delete|export <name>`, `trainer preset import [file]`,
+`trainer dial <multiplier> <preset name>`,
 `trainer reset <id>|all|tricks|presets|everything`, `trainer marker save|go|clear [slot]`,
+`trainer option flip_speed <0.01..100>`, `trainer option flip_advanced <0|1>`,
+`trainer option flip.kickflip <0.01..100>` (and the other fifteen trick keys),
+`trainer option catch_at <0|1>`, `trainer option catch_percent <1..100>`,
+`trainer option pump_power <0..1000>`,
 `trainer tp <x> <y> <z>`, `trainer where`, `trainer jumps`, `trainer dump`, `trainer selftest`.
+
+Legacy `trainer open` names still route to their equivalent section. The community trainer's
+`trainer feel stock|easy|normal|hardcore` keeps its Skate 3 behavior; `trainer workshop` is the
+separate stock-relative mixer.
+
+Shared imports are limited to 2 MiB and 8192 finite numeric values. Invalid or oversized presets
+are rejected as a whole, not truncated. Unknown keys are kept for other game builds. The profile
+writer uses an adjacent temporary file and an atomic replacement, keeping the previous profile
+if writing or replacing fails.
 
 ## For map makers: `trainer.json`
 
 Put a `trainer.json` in your mod folder (beside `manifest.json`). Stock ReSkate ignores it; with the
-trainer, players get your spots and your recommended tuning on the MAP & HUD tab.
+trainer, players get your spots and your recommended tuning in Tools > Map & HUD.
 
 ```json
 {
@@ -56,10 +115,14 @@ trainer, players get your spots and your recommended tuning on the MAP & HUD tab
 The trainer goes through ReSkate's own session rules instead of around them:
 
 - While a session's host sets everyone's physics (the session's "enforce tuning", on by default),
-  a guest cannot edit anything here; the page says so. They skate with the host's whole setup: its
+  a guest cannot edit anything here; the page says so. They receive the host's shared setup: its
   tuning through ReSkate's host-tuning sync, and its class values, trick multipliers and auto push
   through the session's physics extras (`trainer_session.h`), sent whenever the host changes one
   and to players who join later. On a dedicated server all of it is the game's own.
+- Advanced per-trick speeds, automatic catch timing, pump power and extended-push runtime
+  assistance are not included in upstream SessionExtras. These upstream effects remain local; do not
+  treat them as fully synchronized host/guest settings. The workshop displays enforced-host
+  and boosts-disabled restrictions above every tab and keeps personal settings for later.
 - With that switched off, everyone's physics are their own, and the trick multipliers and auto push
   follow the host's boosts permission like ReSkate's other boosts.
 - Teleports and markers follow the host's noclip / teleport permission.
@@ -81,6 +144,18 @@ It unlocks no cosmetics or entitlements.
 - Settings, presets, markers: `%LOCALAPPDATA%\ReSkate\trainer\trainer.json`.
 
 ## Checking a build
+
+Enable the trainer regressions and point the tuning-name test at your supported game install:
+
+```
+cmake --preset vs2022-x64 -DDINGOSDK_BUILD_TRAINER_TESTS=ON -DDINGOSDK_TEST_GAME_ROOT="C:/path/to/skate"
+cmake --build --preset release --parallel 4
+ctest --test-dir build/vs2022-x64 -C Release -R "^trainer_" --output-on-failure
+```
+
+On Windows these include actual ImGui interaction/layout, Feel rules, physics ownership,
+profile replacement and preset import checks. `dingosdk_trainer_page_tests <output-folder>`
+also writes native UI captures; it does not test game hooks or controller mapping.
 
 ```
 RESKATE_STARTUP_COMMANDS="load <level asset>;wait 25;trainer selftest"
@@ -113,7 +188,7 @@ folder>` (CMake option `DINGOSDK_BUILD_TRAINER_TESTS`) lists the tuning values w
   out as the class lays them out (`trainer_classes.cpp`; the table in `trainer_classes.inc` is
   generated from the game's own data). The search reads all of the game's writable memory, so it
   only runs for a player with a use for it: one of those values or the flip speed is not the
-  game's own (theirs, or a host's they skate with), or the EVERYTHING list is open. Then it runs
+  game's own (theirs, or a host's they skate with), or the Settings list is open. Then it runs
   on its own thread a few seconds after a level loads, and at most three times per level;
   `trainer classes` says what it found. Native code keeps its own copy of the push speeds, found
   and written the same way.

@@ -35,6 +35,7 @@ struct Row {
     std::uint8_t modes{}; // which short lists it is on (trainer_presets.h: mode_realistic, mode_fun)
     bool used{};          // the game's code was found to read it
     std::string help;     // what the value does, in a sentence; empty for most
+    bool preset_locked{}; // inherited lock from a linked parent
 };
 struct PresetRow {
     std::string name, note;
@@ -45,6 +46,8 @@ struct PresetRow {
     std::string title;
     double factor{1}, amount{1};
     std::uint8_t modes{}; // which of the short lists show it (mode_realistic, mode_fun)
+    // Saved inputs for a read-only review; built-ins use their curated Feel preview.
+    std::vector<std::pair<std::string, double>> values;
 };
 struct Marker {
     bool set{};
@@ -72,6 +75,7 @@ struct View {
     std::size_t touched{};
     // Nothing the trainer does is in force: no changed value, lock, preset or trick slider.
     bool stock{true};
+    bool capture_changed{}; // physics OR script-driven settings can be saved
     // Practice
     int slot{};
     std::array<Marker, marker_slots> markers{};

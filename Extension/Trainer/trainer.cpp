@@ -4,6 +4,9 @@
 #include "trainer_jump.h"
 #include "trainer_presets.h"
 #include "trainer_session.h"
+#include "trainer_feel.h"
+#include "trainer_atomic_file.h"
+#include "trainer_preset_io.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/path_text.h"
@@ -136,6 +139,7 @@ struct State {
     // The flip speed in the air now: the game's own number, what the trainer made of it, and whether it can be reached at all.
     struct FlipDrive {
         bool active{};
+        physics_policy::FlipObservation observed{};
         float game{}, written{};
         float factor{1}; // the flip speed times the turning trick's own
     } flip_drive;
@@ -245,11 +249,9 @@ std::filesystem::path game_directory() {
 }
 std::optional<Json> read_json(const std::filesystem::path &path) {
     try {
-        std::ifstream file(path, std::ios::binary);
-        if (!file) return std::nullopt;
-        const std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-        if (text.empty() || text.size() > 1024 * 1024) return std::nullopt;
-        return Json::parse(text);
+        const auto text = storage::read_bounded(path, 32 * 1024 * 1024);
+        if (!text || text->empty()) return std::nullopt;
+        return Json::parse(*text, {.bytes = 32 * 1024 * 1024, .events = 4 * 1024 * 1024});
     } catch (...) {
         return std::nullopt;
     }
@@ -416,17 +418,9 @@ void save_store() {
         if (directory.empty()) return;
         std::error_code error;
         std::filesystem::create_directories(directory, error);
-        const auto target = directory / L"trainer.json", temporary = directory / L"trainer.json.tmp";
-        {
-            std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
-            file << json.dump(2);
-            if (!file) return;
-        }
-        std::filesystem::rename(temporary, target, error);
-        if (error) {
-            std::filesystem::remove(target, error);
-            std::filesystem::rename(temporary, target, error);
-        }
+        if (error) { say(logging::Level::warning, "Trainer: could not create the profile folder."); return; }
+        if (const auto saved = storage::write_atomic(directory / L"trainer.json", json.dump(2)); saved)
+            say(logging::Level::warning, "Trainer: save failed; previous trainer.json was preserved: " + saved.message());
     } catch (...) {
         say(logging::Level::warning, "Trainer: could not save trainer.json.");
     }
@@ -1042,7 +1036,7 @@ std::string apply_preset(std::string_view name) {
     if (std::ranges::find(s.active, applied) == s.active.end()) s.active.push_back(applied);
     changed();
     return std::format("{}: {} values set{}.", applied, count,
-                       locked ? std::format("; {} locked values left alone (untick their boxes in Tune to let presets change them)", locked) : "");
+                       locked ? std::format("; {} locked values left alone (untick their boxes in Settings to let presets change them)", locked) : "");
 }
 
 // ---- maps ------------------------------------------------------------------------------
@@ -1081,8 +1075,19 @@ MapFile read_map_file(const std::string &level) {
     }
     return result;
 }
+void clear_live_tricks() {
+    auto &s = state();
+    if (s.flip_live || s.pump_live || s.flip_drive.active || s.flip_trick_seen) s.view_due = true;
+    s.flip_drive = {};
+    s.flip_live = s.pump_live = false;
+    s.flip_trick_seen = 0;
+    s.catch_seconds = flip_gate_stock;
+}
 void enter_map(const std::string &level) {
     auto &s = state();
+    clear_live_tricks();
+    s.entity = 0;
+    s.telemetry.skater = false;
     s.map = level;
     s.map_file = level.empty() ? MapFile{} : read_map_file(level);
     s.motion = {};
@@ -1184,22 +1189,35 @@ void drive_flip_speed(std::uintptr_t base, bool airborne) {
     auto &s = state();
     auto &drive = s.flip_drive;
     const auto now = read_flip_state(base, static_cast<std::uintptr_t>(s.entity));
-    s.flip_live = static_cast<bool>(now);
+    if (s.flip_live != static_cast<bool>(now)) {
+        s.flip_live = static_cast<bool>(now);
+        s.view_due = true;
+    }
+    // A new skater, state page, handle generation or trick must never inherit the last
+    // animation's baseline, even when its speed happens to equal what we wrote.
+    if (drive.active && (!now || !physics_policy::same_flip_target(drive.observed, now.observation()))) drive = {};
     if (!now || !airborne) {
-        if (now && drive.active && now.speed == drive.written && drive.written != drive.game) (void)write_flip_speed(now, drive.game);
+        if (now && drive.active && drive.written != drive.game &&
+            physics_policy::can_write_flip({drive.observed.owner, drive.observed.trick, drive.written}, now.observation(), drive.game))
+            (void)write_flip_speed(now, drive.game);
         drive = {};
         return;
     }
     if (now.trick) s.flip_trick_seen = now.trick;
-    float factor = s.boosts.flip;
-    if (s.flip_advanced && !extras_blocked())
-        if (const auto index = flip_trick_index(now.trick); index >= 0) factor *= s.flip_trick[static_cast<std::size_t>(index)];
+    const auto index = flip_trick_index(now.trick);
+    const float individual = index >= 0 ? s.flip_trick[static_cast<std::size_t>(index)] : 1.0f;
+    const float factor = physics_policy::effective_flip_factor(s.boosts.flip, individual, s.flip_advanced, s.catch_at, extras_blocked());
     // A number that is not the trainer's own is the game's: the flight's first, or a new trick's.
     if (!drive.active || now.speed != drive.written) drive.game = now.speed;
     drive.active = true;
+    drive.observed = now.observation();
     drive.factor = factor;
     drive.written = std::clamp(drive.game * factor, 0.0f, 1000.0f);
-    if (now.speed != drive.written) (void)write_flip_speed(now, drive.written);
+    if (now.speed != drive.written && !write_flip_speed(now, drive.written)) {
+        drive = {}; // an unsuccessful write is never a baseline to restore later
+        s.flip_live = false;
+        s.view_due = true;
+    }
 }
 void observe(std::uintptr_t base, std::uintptr_t client, std::uint64_t now) {
     auto &s = state();
@@ -1217,8 +1235,18 @@ void observe(std::uintptr_t base, std::uintptr_t client, std::uint64_t now) {
         }
     }
     if (!found) {
-        if (t.skater) { t.skater = false; m.valid = false; s.entity = 0; }
+        clear_live_tricks();
+        t.skater = false;
+        m.valid = false;
+        s.entity = 0;
         return;
+    }
+    if (s.entity != skater.skater_identity) {
+        clear_live_tricks();
+        m = {};
+        s.last_state = 0;
+        s.offboard_grounded = false;
+        s.boost_factor = 0;
     }
     s.entity = skater.skater_identity;
     watch_physics_state(client, s.entity);
@@ -1260,6 +1288,7 @@ void observe(std::uintptr_t base, std::uintptr_t client, std::uint64_t now) {
     const bool jumped = std::sqrt(step[0] * step[0] + step[1] * step[1] + step[2] * step[2]) > 25.0f;
     if (!m.valid || seconds <= 0.0005 || seconds > 0.25 || jumped) {
         // First sample, a hitch, or a teleport: nothing can be measured across it.
+        if (seconds > 0.25 || jumped) clear_live_tricks();
         m = {};
         m.valid = true;
         m.position = position;
@@ -1524,6 +1553,7 @@ void build_view() {
         next->rows.push_back({e.id, e.label, e.group, e.kind, e.value, e.stock, e.touched, e.frozen, e.detail, std::string(friendly), rank, modes,
                               e.used});
         next->rows.back().help = essential_help(e.key);
+        next->rows.back().preset_locked = is_locked(e);
         if (e.touched) ++next->touched;
         if (std::ranges::find(next->groups, e.group) == next->groups.end()) next->groups.push_back(e.group);
     }
@@ -1560,7 +1590,11 @@ void build_view() {
             next->presets.push_back(std::move(row));
         }
     }
-    for (const auto &[name, values] : s.user) next->presets.push_back({name, std::format("{} values", values.size()), false, is_active(name)});
+    for (const auto &[name, values] : s.user) {
+        PresetRow row{name, std::format("{} values", values.size()), false, is_active(name)};
+        row.values.assign(values.begin(), values.end());
+        next->presets.push_back(std::move(row));
+    }
     next->slot = s.slot;
     next->auto_return = s.auto_return;
     next->hippy_height = s.hippy_height;
@@ -1594,6 +1628,7 @@ void build_view() {
     next->open_serial = s.open_serial;
     next->stock = s.revert == RevertTuning{} && !next->touched && s.active.empty() && std::ranges::none_of(s.entries, &Entry::frozen) &&
                   std::ranges::all_of(trick_names, [](std::string_view name) { return *trick_option(name) == trick_stock(name); }) && !s.catch_at && !s.flip_advanced;
+    next->capture_changed = next->touched || s.catch_at || s.flip_advanced || std::ranges::any_of(trick_names, [](std::string_view name) { return *trick_option(name) != trick_stock(name); });
     next->share_text = s.share_text;
     next->share_serial = s.share_serial;
     next->open_tab = s.open_tab;
@@ -1691,12 +1726,9 @@ std::string import_preset(const std::string &file_name) {
     if (directory.empty()) return "error: the trainer's folder could not be found.";
     const auto path = directory / (file_name.empty() ? "clipboard.txt" : file_stem(std::filesystem::path(file_name).stem().string()) + ".json");
     std::string text;
-    {
-        std::ifstream file(path, std::ios::binary);
-        if (!file) return file_name.empty() ? "error: there is nothing to import." : "error: shared\\" + path.filename().string() + " does not exist.";
-        text.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
-    }
-    if (text.size() > 256 * 1024) return "error: that is too long to be a preset.";
+    const auto bounded = storage::read_bounded(path, storage::shared_bytes_limit);
+    if (!bounded) return "error: preset file is missing, unreadable or exceeds 2 MiB. Nothing was imported.";
+    text = *bounded;
     if (const auto tag = text.find(share_tag); tag != std::string::npos) {
         const auto start = tag + share_tag.size();
         const auto end = text.find_first_of(" \t\r\n`\"'", start);
@@ -1705,23 +1737,25 @@ std::string import_preset(const std::string &file_name) {
         text = *decoded;
     }
     try {
-        const auto json = Json::parse(text);
+        const auto json = Json::parse(text, {.bytes = storage::shared_bytes_limit});
         if (!json.is_object() || !json.contains("values") || !json.at("values").is_object()) return "error: that is not a ReSkate Trainer preset.";
+        const auto decoded_values = storage::decode_values(json.at("values"));
+        if (!decoded_values) return "error: preset values are invalid or exceed 8192 entries. Nothing was imported.";
         std::map<std::string, double, std::less<>> values;
         std::size_t unknown{};
-        for (const auto &[key, value] : json.at("values").items()) {
-            if (!value.is_number() || values.size() >= 512) continue;
+        for (const auto &[key, value] : *decoded_values) {
             const auto id = lower(key);
             const bool trick = id.starts_with(trick_prefix) && (trick_option(std::string_view(id).substr(trick_prefix.size())) ||
                                                                 trick_switch(std::string_view(id).substr(trick_prefix.size())));
             if (!trick && !find_entry(id)) ++unknown; // kept: another build of the game may have it
-            values[id] = value.get<double>();
+            if (!values.emplace(id, value).second)
+                return "error: preset contains duplicate value ids with different letter casing. Nothing was imported.";
         }
         if (values.empty()) return "error: that preset holds no values.";
         auto name = json.value("name", "Imported");
         if (name.empty() || name.size() > 40) name = "Imported";
         const auto taken = [&](const std::string &candidate) {
-            if (lower(candidate) == "stock" || lower(candidate) == "map" || s.user.contains(candidate)) return true;
+            if (lower(candidate) == "stock" || lower(candidate) == "map" || std::ranges::any_of(s.user, [&](const auto &item) { return lower(item.first) == lower(candidate); })) return true;
             return std::ranges::any_of(builtin_presets(), [&](const auto &preset) { return lower(preset.name) == lower(candidate); });
         };
         auto unique = name;
@@ -1767,7 +1801,8 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool playing, const std::s
                 const auto &marker = current_map().markers[static_cast<std::size_t>(s.slot)];
                 if (marker.set) (void)go_to(marker.position, "your marker");
             }
-        } else if (s.telemetry.skater) {
+        } else {
+            clear_live_tricks();
             s.telemetry.skater = false;
             s.motion.valid = false;
             s.entity = 0;
@@ -1859,7 +1894,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool playing, const std::s
         // Pumping: the game says when (its pumping state), the trainer sizes the gain on the physics
         // step (trainer_pump_power). The player's own setting only, like the push speed.
         {
-            const auto pump = read_pump_state(base, static_cast<std::uintptr_t>(s.entity));
+            const auto pump = playing && s.telemetry.skater ? read_pump_state(base, static_cast<std::uintptr_t>(s.entity)) : PumpState{};
             if (pump.found != s.pump_live) {
                 s.pump_live = pump.found;
                 s.view_due = true;
@@ -1952,6 +1987,43 @@ std::string trickline_command(const std::vector<std::string> &a) {
     changed();
     return on ? "Tricklining extras on: the board bending boost, heavier revert and powerslide friction." : "Tricklining extras off.";
 }
+// Curated workshop profiles coexist with the historical Skate 3 feel command.
+std::string workshop_command(const std::vector<std::string> &arguments, bool assistance = false) {
+    auto &s = state();
+    std::string why;
+    if (!s.ready) return "error: load a level before changing physics.";
+    if (!editable(&why)) return "error: " + why;
+    if (arguments.size() != 1) return "error: supply one feel name or mixer value.";
+    auto value = assistance ? number(arguments[0]) : workshop::amount(arguments[0]);
+    if (!value) value = number(arguments[0]);
+    if (!value || (assistance ? *value < .1 || *value > 5 : *value < -1 || *value > 1))
+        return assistance ? "error: capture assistance must be between 0.1 and 5x stock." : "error: feel must be Hardcore, Authentic, Stock, Accessible, Arcade or -1..1.";
+    std::vector<Row> rows;
+    rows.reserve(s.entries.size());
+    for (const auto &entry : s.entries) {
+        Row row; row.id = entry.id; row.value = entry.value; row.stock = entry.stock; row.kind = entry.kind;
+        row.used = entry.used; row.detail = entry.detail; row.preset_locked = is_locked(entry);
+        rows.push_back(std::move(row));
+    }
+    auto plan = workshop::preview(rows, *value);
+    if (assistance) {
+        plan.clear();
+        for (const auto &row : rows) {
+            const auto key = lower(row.id);
+            if (!row.used || row.detail || (key != "physicsmode.grindlockdist" && key != "physicsgrindsair.maxdistboardslide" && key != "physicsgrindsair.maxdisttipslide")) continue;
+            plan.push_back({row.id, row.value, static_cast<float>(row.stock * *value), row.preset_locked});
+        }
+    }
+    std::size_t applied{}, locked{};
+    for (const auto &change : plan) {
+        if (auto *entry = find_entry(change.id)) {
+            if (is_locked(*entry)) { ++locked; continue; }
+            set_entry(*entry, change.after); ++applied;
+        }
+    }
+    changed();
+    return std::format("{}: {} supported values applied, {} locks kept. Other edits stay.", assistance ? "Grind capture assistance" : "Workshop feel", applied, locked);
+}
 std::string run(std::string_view verb, const std::vector<std::string> &a) {
     auto &s = state();
     const auto v = lower(verb);
@@ -1974,6 +2046,8 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
         if (v == "reset" && lower(arg(0)) == "tricks") {
             s.hippy_height = s.nocomply_height = s.boneless_height = s.offboard_height = s.flip_speed = s.pump_power = 1.0f;
             s.catch_at = false;
+            s.catch_percent = trick_stock(catch_percent_name);
+            s.catch_seconds = flip_gate_stock;
             s.flip_advanced = false;
             s.flip_trick.fill(1.0f);
             s.revert_boost = 0.0f;
@@ -2003,6 +2077,8 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
             s.active.clear();
             s.hippy_height = s.nocomply_height = s.boneless_height = s.offboard_height = s.flip_speed = s.pump_power = 1.0f;
             s.catch_at = false;
+            s.catch_percent = trick_stock(catch_percent_name);
+            s.catch_seconds = flip_gate_stock;
             s.flip_advanced = false;
             s.flip_trick.fill(1.0f);
             s.revert_boost = 0.0f;
@@ -2072,13 +2148,16 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
                 if (e.touched) values[e.key] = e.value;
             for (const auto trick : trick_names)
                 if (const auto *option = trick_option(trick); *option != trick_stock(trick)) values[std::string(trick_prefix) + std::string(trick)] = *option;
-        if (s.flip_advanced) values[std::string(trick_prefix) + std::string(flip_advanced_name)] = 1;
-        if (s.catch_at) {
-            values[std::string(trick_prefix) + std::string(catch_at_name)] = 1;
-            values[std::string(trick_prefix) + std::string(catch_percent_name)] = s.catch_percent;
-        }
+            if (s.flip_advanced) values[std::string(trick_prefix) + std::string(flip_advanced_name)] = 1;
+            if (s.catch_at) {
+                values[std::string(trick_prefix) + std::string(catch_at_name)] = 1;
+                values[std::string(trick_prefix) + std::string(catch_percent_name)] = s.catch_percent;
+            }
             if (values.empty()) return "error: nothing is changed, so there is nothing to save.";
             const auto count = values.size();
+            // Commands resolve names without case; saving must replace that same entry.
+            const auto existing = std::ranges::find_if(s.user, [&](const auto &item) { return lower(item.first) == lower(name); });
+            if (existing != s.user.end()) name = existing->first;
             s.user[name] = std::move(values);
             changed();
             return std::format("Saved \"{}\" ({} values).", name, count);
@@ -2094,6 +2173,8 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
     if (v == "revert") return revert_command(a);
     if (v == "trickline") return trickline_command(a);
     if (v == "feel") return feel_command(a);
+    if (v == "workshop") return workshop_command(a);
+    if (v == "assist") return workshop_command(a, true);
     if (v == "slot") {
         const auto slot = slot_argument(a, 0);
         if (!slot) return std::format("error: slots are 1 to {}.", marker_slots);
@@ -2211,10 +2292,10 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
     if (v == "open") {
         const auto tab = lower(arg(0));
         // The last three are the Tune tab on one of its lists.
-        const std::array<std::string_view, 9> tabs{"tune", "presets", "practice", "map", "realistic", "fun", "everything", "camera", "trickline"};
+        const std::array<std::string_view, 11> tabs{"tune", "presets", "practice", "map", "realistic", "fun", "everything", "camera", "trickline", "feel", "settings"};
         const auto found = std::ranges::find(tabs, tab);
-        if (!tab.empty() && found == tabs.end()) return "error: usage: trainer open [tune|trickline|practice|map|realistic|fun|everything]";
-        s.open_tab = tab.empty() ? 0 : static_cast<int>(found - tabs.begin());
+        if (!tab.empty() && found == tabs.end()) return "error: usage: trainer open [feel|tune|trickline|practice|map|realistic|fun|everything|settings|presets]";
+        s.open_tab = tab.empty() ? 9 : static_cast<int>(found - tabs.begin());
         ++s.open_serial;
         s.view_due = true;
         return "Opening the trainer.";
@@ -2270,7 +2351,7 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
 bool stage_import(std::string_view text) noexcept {
     try {
         const auto directory = shared_directory();
-        if (directory.empty() || text.empty() || text.size() > 256 * 1024) return false;
+        if (directory.empty() || text.empty() || text.size() > storage::shared_bytes_limit) return false;
         std::error_code error;
         std::filesystem::create_directories(directory, error);
         std::ofstream file(directory / "clipboard.txt", std::ios::binary | std::ios::trunc);
