@@ -2,7 +2,7 @@
 #include <Windows.h>
 #include <filesystem>
 
-namespace dingosdk::crash_report {
+namespace dingosdk::backtrace {
 enum class StartResult { disabled, ready, failed };
 // Called outside DllMain. A missing endpoint or RESKATE_CRASH_REPORTING=0 disables reporting.
 StartResult start(const std::filesystem::path& log_directory) noexcept;

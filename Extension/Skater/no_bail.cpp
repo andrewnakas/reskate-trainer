@@ -67,7 +67,6 @@ struct Protection {
     SRWLOCK lock = SRWLOCK_INIT;
     Lease lease;
     std::atomic<NoBailStepObserver> step_observer{};
-    std::array<std::atomic<NoBailStepObserver>, no_bail_step_listener_slots> listeners{};
 };
 Protection& protection() { static auto* value = new Protection; return *value; }
 struct StateWatch {
@@ -2019,21 +2018,10 @@ void skeleton_response(std::uintptr_t rig, float seconds, bool wipeout) {
     // The state post-update can raise another request after the selector ran.
     // Filter at this consumer, then let native constraints and recovery run.
     if (filter_requests(rig, &Owner::rig)) wipeout = false;
-    const auto observer = protection().step_observer.load(std::memory_order_acquire);
-    std::array<NoBailStepObserver, no_bail_step_listener_slots> listeners{};
-    bool any = observer != nullptr;
-    for (std::size_t i = 0; i < listeners.size(); ++i) {
-        listeners[i] = protection().listeners[i].load(std::memory_order_acquire);
-        any = any || listeners[i];
-    }
-    if (any) {
+    if (const auto observer = protection().step_observer.load(std::memory_order_acquire)) {
         LastError error;
         NoBailSkater skater;
-        if (published_skater(rig, skater)) {
-            if (observer) observer(skater, seconds, wipeout);
-            for (const auto listener : listeners)
-                if (listener) listener(skater, seconds, wipeout);
-        }
+        if (published_skater(rig, skater)) observer(skater, seconds, wipeout);
     }
     protection().skeleton_original(rig, seconds, wipeout);
 }
@@ -2382,24 +2370,6 @@ std::size_t fast_probe_drain(FastProbeRow* rows, std::size_t capacity) noexcept 
     while (tail != head && count < capacity) rows[count++] = f.rows[tail++ % fast_probe_capacity];
     f.tail.store(tail, std::memory_order_release);
     return count;
-}
-bool add_no_bail_step_listener(NoBailStepObserver listener) noexcept {
-    if (!listener) return false;
-    auto& slots = protection().listeners;
-    for (auto& slot : slots)
-        if (slot.load(std::memory_order_acquire) == listener) return true;
-    for (auto& slot : slots) {
-        NoBailStepObserver empty{};
-        if (slot.compare_exchange_strong(empty, listener, std::memory_order_acq_rel)) return true;
-    }
-    return false;
-}
-void remove_no_bail_step_listener(NoBailStepObserver listener) noexcept {
-    if (!listener) return;
-    for (auto& slot : protection().listeners) {
-        auto expected = listener;
-        slot.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel);
-    }
 }
 void watch_physics_state(std::uintptr_t client, std::uintptr_t entity) noexcept {
     auto& w = state_watch();

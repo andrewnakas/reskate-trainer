@@ -16,7 +16,7 @@
 namespace dingosdk::server {
 namespace {
 constexpr std::string_view help_text =
-    "status | net [player] | players | say <text> | msg <player> <text> | msg-party <player> <text> | msg-admins <text> | kick <player> [minutes|restart] | kick-time <minutes>|restart | ban <player or SteamID64> [name] | unban <SteamID64> | bans\n"
+    "status | net [player] | players | say <text> | msg <player> <text> | msg-party <player> <text> | msg-admins <text> | kick <player> | ban <player or SteamID64> [name] | unban <SteamID64> | bans\n"
     "map <name, e.g. San Vansterdam> | maps [reload] | name <text> | password <text|off> | welcome <text|off> | listed on|off\n"
     "voice on|off | voice-range <50-1000> | distances <full> <half> <half-return> <low> | crowd <n>|off | rate <KB/s> | bone-scale <1-8>|off | bone-reach <0.5-20>|off\n"
     "placement everyone|admins|nobody | objects <number>|off | object-scaling on|off | effects on|off | clear-objects | noclip on|off | nobail on|off | boosts on|off | tuning on|off\n"
@@ -128,43 +128,13 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
         return done;
     }
     if (name == "kick") {
-        // "kick <player> [minutes|restart]". A last word that is a time is one only when what
-        // comes before it is the player: the whole text is tried as a name first, so "Player
-        // 1234" is never a player and a time. After a SteamID64 the in-game menu sends the
-        // player's session epoch, a number far above any time, and the server window a reason.
         auto *guest = target(argument);
-        std::optional<unsigned> minutes;
-        if (const auto space = argument.rfind(' '); space != std::string_view::npos) {
-            const auto word = lower(trim(argument.substr(space + 1)));
-            const auto value = word == "restart" ? std::optional<std::uint64_t>(0) : number(word);
-            const bool by_id = number(split(argument).first).has_value();
-            if (value && (by_id || !guest || !guest->handshaken)) {
-                auto *named = target(trim(argument.substr(0, space)));
-                if (named && named->handshaken && *value <= 1440) {
-                    guest = named;
-                    minutes = static_cast<unsigned>(*value);
-                } else if (named && named->handshaken && !by_id) {
-                    return "kick <player> [minutes 1-1440|restart]";
-                }
-            }
-        }
         if (!guest || !guest->handshaken) return "No single connected player matches \"" + std::string(argument) + "\".";
         if (!outranks(guest->member.id)) return "You cannot kick a player of your rank or above.";
         const auto label = guest_name(*guest);
-        const auto how_long = keep_out(guest->member.id, minutes);
-        drop(guest->member.id, "You were kicked from this server" + how_long + ".");
-        return changed(label + " was kicked" + how_long + ".");
-    }
-    if (name == "kick-time") {
-        const auto word = lower(argument);
-        const auto value = word == "restart" || word == "off" ? std::optional<std::uint64_t>(0) : number(argument);
-        if (!value || *value > 1440)
-            return "kick-time <minutes 1-1440>|restart (now " +
-                   (config_.kick_minutes ? std::to_string(config_.kick_minutes) + " min" : std::string("until the server restarts")) + ")";
-        config_.kick_minutes = static_cast<unsigned>(*value);
-        return changed(config_.kick_minutes
-                           ? "Kicked players can join again after " + std::to_string(config_.kick_minutes) + " min. Players already kicked keep the time they were given."
-                           : std::string("Kicked players stay out until the server restarts. Players already kicked keep the time they were given."));
+        kicked_.insert(guest->member.id);
+        drop(guest->member.id, "You were kicked from this server.");
+        return changed(label + " was kicked until the server restarts.");
     }
     if (name == "ban") {
         auto [who, reason] = split(argument);
@@ -213,33 +183,21 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
     if (name == "maps" && lower(argument) == "reload") {
         // A map mod copied into Mods while the server runs: its maps can be switched to at once.
         if (!console && !can(admin, "map")) return "Your role cannot reload the maps.";
-        const auto text = reload_maps();
+        std::vector<std::string> before;
+        for (const auto &level : levels()) before.push_back(level.asset);
+        const auto problems = load_levels(config_.mods);
+        resend_maps(); // whoever picks maps is sent the list again
+        std::string added;
+        std::size_t gone{};
+        for (const auto &level : levels())
+            if (std::find(before.begin(), before.end(), level.asset) == before.end()) added += (added.empty() ? "" : ", ") + level.name;
+        for (const auto &asset : before)
+            if (!find_level(asset)) ++gone;
+        std::string text = "Maps read again from Mods: " + std::to_string(levels().size()) + " maps" +
+                           (added.empty() ? ", none new" : ", new: " + added) + (gone ? ", " + std::to_string(gone) + " no longer there" : "") + ".";
+        for (const auto &problem : problems) text += "\nMods: skipped " + problem;
         if (!console) log_(text);
         return text;
-    }
-    if (name == "maps" && lower(split(argument).first) == "update") {
-        // Now, whatever "maps latest" is: Thunderstore is asked about each map mod (server_map_update.h).
-        if (!console && !can(admin, "map")) return "Your role cannot update the maps.";
-        map_update_requested_ = true;
-        return std::string("Asking Thunderstore for the newest version of each of this server's maps; what it finds is in the log.");
-    }
-    if (name == "maps" && lower(split(argument).first) == "latest") { // maps latest [on|off | every <minutes>]
-        if (!console && !can(admin, "map")) return "Your role cannot change how the maps are updated.";
-        const auto [word, wanted] = split(split(argument).second);
-        const auto now_text = std::string("maps latest on|off | maps latest every <5-1440 minutes> (now ") + (config_.latest_versions ? "on" : "off") +
-                              ", every " + std::to_string(config_.latest_check_minutes) + " min)";
-        if (lower(word) == "every") {
-            const auto minutes = number(wanted);
-            if (!minutes || *minutes < 5 || *minutes > 1440) return now_text;
-            config_.latest_check_minutes = static_cast<unsigned>(*minutes);
-            return changed("Thunderstore is asked about this server's maps every " + std::to_string(*minutes) + " minutes.");
-        }
-        const auto on = on_off(word);
-        if (!on) return now_text;
-        config_.latest_versions = *on;
-        if (*on) map_update_requested_ = true;
-        return changed(*on ? "This server keeps its maps at Thunderstore's newest version, and players are held to it."
-                           : "This server's maps stay at the versions in its Mods folder.");
     }
     if (name == "maps") {
         std::string text = std::to_string(levels().size()) + " maps (custom maps come from Mods next to the server)";
@@ -980,11 +938,6 @@ void Host::check_scoring(Guest &guest) {
 // time. Flagged players are taken out of linked throwdowns and coop challenges (the roster's
 // speeding flag: every client drops them from those), or kicked; the flag clears after a minute
 // of normal speed.
-std::string Host::keep_out(std::uint64_t id, std::optional<unsigned> chosen) {
-    const auto minutes = chosen.value_or(config_.kick_minutes);
-    kicked_[id] = minutes ? now_ + minutes * 60000000ULL : 0;
-    return minutes ? " for " + std::to_string(minutes) + (minutes == 1 ? " minute" : " minutes") : std::string(" until the server restarts");
-}
 bool Host::check_speed(Guest &guest, std::uint64_t sent) {
     if (config_.speed_check == "off" || !guest.handshaken || !guest.world_ready || !sent) return true;
     if (!guest.speed.sample(sent, now_)) return true;

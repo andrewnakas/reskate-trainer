@@ -293,27 +293,6 @@ std::string xinput_entry_owners() {
     return text.empty() ? "none" : text;
 }
 
-std::atomic<dingosdk::overlay::GamepadFilter>& gamepad_filter() {
-    static std::atomic<dingosdk::overlay::GamepadFilter> value{};
-    return value;
-}
-// The game's own read only: not ReSkate's (overlay_input_access) and not an inner layer of a
-// read already being answered (Steam's hook going on to XInput runs inside OverlayInputAccess).
-void filter_pad(bool outer, DWORD user, XINPUT_STATE* output) noexcept {
-    if (!outer || !output) return;
-    const auto filter = gamepad_filter().load(std::memory_order_acquire);
-    if (!filter) return;
-    auto& g = output->Gamepad;
-    dingosdk::overlay::GamepadValues pad{g.wButtons, g.bLeftTrigger, g.bRightTrigger, g.sThumbLX, g.sThumbLY, g.sThumbRX, g.sThumbRY};
-    filter(static_cast<unsigned>(user), pad);
-    g.wButtons = pad.buttons;
-    g.bLeftTrigger = pad.left_trigger;
-    g.bRightTrigger = pad.right_trigger;
-    g.sThumbLX = pad.left_x;
-    g.sThumbLY = pad.left_y;
-    g.sThumbRX = pad.right_x;
-    g.sThumbRY = pad.right_y;
-}
 // Another program's hook on XInput that was put in front of the capture's own after it was
 // installed (Steam's overlay does, for Steam Input, and answers the game with its own pad
 // without going on to XInput): the capture then never sees the game's reads, and a menu that
@@ -323,8 +302,9 @@ void game_pad_read(DWORD user, XINPUT_STATE* output) noexcept;
 template<std::size_t I>
 DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
     const bool capture = block_polled_input();
-    const bool outer = overlay_input_access == 0;
     note_prompt_read(prompt_xinput);
+    // The game's own read (not ReSkate's, and not an inner layer of a read already being answered).
+    const bool outer = overlay_input_access == 0;
     DWORD result;
     { // It may go on to XInput's own entry point, which is hooked as well.
         OverlayInputAccess access;
@@ -716,11 +696,10 @@ void lean_grind_stick(XINPUT_GAMEPAD& pad) noexcept {
     pad.sThumbLY = static_cast<SHORT>(std::clamp(lean.y.load(std::memory_order_relaxed), -1.0f, 1.0f) * 32767.0f);
     lean.given.fetch_add(1, std::memory_order_relaxed);
 }
-// The game's own read of a controller (not ReSkate's and not an inner layer of one): ReSkate's gamepad filter, then
-// Dark Pop's D-pad hiding in the air and the grind sticks. From captured_xinput, and from captured_front when
-// another program's XInput hook (Steam's overlay) answers the game first.
-void game_pad_read(DWORD user, XINPUT_STATE* output) noexcept {
-    filter_pad(true, user, output);
+// The game's own read of a controller (not ReSkate's and not an inner layer of one): Dark Pop's D-pad hiding in the
+// air and the grind sticks. From captured_xinput, and from captured_front when another program's XInput hook (Steam's
+// overlay) answers the game first.
+void game_pad_read(DWORD, XINPUT_STATE* output) noexcept {
     if (dark_pop_hiding((output->Gamepad.wButtons & dark_pop_xinput_dpad) != 0)) {
         output->Gamepad.wButtons = static_cast<WORD>(output->Gamepad.wButtons & ~dark_pop_xinput_dpad);
         dark_pop_hide().hidden.fetch_add(1, std::memory_order_relaxed);
@@ -1089,7 +1068,4 @@ extern "C" std::uint64_t DingoSDKOverlayGrindStickLeaned() noexcept {
 // How many of the game's polls were given a made-up right stick so far.
 extern "C" std::uint64_t DingoSDKOverlayGrindStickMirrored() noexcept {
     return dingosdk::overlay::detail::grind_stick_mirrored().load(std::memory_order_relaxed);
-}
-extern "C" void DingoSDKOverlaySetGamepadFilter(dingosdk::overlay::GamepadFilter filter) {
-    dingosdk::overlay::detail::gamepad_filter().store(filter, std::memory_order_release);
 }

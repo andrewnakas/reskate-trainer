@@ -12,7 +12,6 @@ add_library(dingosdk_overlay STATIC
     Extension/UI/Overlay/overlay_notices.cpp
     Extension/UI/Overlay/chat_overlay.cpp
     Extension/UI/Overlay/map_download_card.cpp
-    Extension/UI/Overlay/message_card.cpp
     Extension/UI/Overlay/hub_page.cpp
     Extension/UI/Overlay/game_text_overlay.cpp
     Extension/UI/Overlay/perf_overlay.cpp
@@ -40,7 +39,6 @@ add_library(dingosdk_overlay STATIC
     Extension/UI/Overlay/multiplayer_lobbies.cpp
     Extension/UI/Overlay/multiplayer_session.cpp
     Extension/Trainer/trainer_page.cpp
-    Extension/Music/music_page.cpp
     Extension/Trainer/trainer_view.cpp
     Extension/HallOfMeat/hall_of_meat_overlay.cpp
 )

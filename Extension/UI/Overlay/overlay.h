@@ -116,16 +116,6 @@ struct FlightInput {
     float look_x = 0, look_y = 0;
 };
 
-// May change what the GAME reads from an XInput pad (never what ReSkate itself reads). `user` is
-// the XInput slot. Called on whatever thread the game polls from, once per poll that returns a
-// pad. The grind exit control's grab and lean guards (grind_exit_control.h).
-struct GamepadValues {
-    std::uint16_t buttons = 0;
-    std::uint8_t left_trigger = 0, right_trigger = 0;
-    std::int16_t left_x = 0, left_y = 0, right_x = 0, right_y = 0;
-};
-using GamepadFilter = void (*)(unsigned user, GamepadValues& pad) noexcept;
-
 struct DebugModel {
     bool available = false;
     bool camera_available = false;
@@ -283,15 +273,6 @@ struct BoardBreakModel {
     std::string deck = "None";
 };
 
-// Grind exit control's switches (Extension/Skater/grind_exit_control.h): started, switched on,
-// LT/RT toe/heel (else left/right of travel), and the player's stance (0 not set, 1 regular,
-// 2 goofy).
-struct GrindExitModel {
-    bool available = false, enabled = false, toe_heel = true;
-    int stance = 0;
-    int strength = 100; // pop-out strength, percent (10-100)
-};
-
 struct Model {
     std::string state = "Waiting for native state";
     std::string detail;
@@ -313,7 +294,6 @@ struct Model {
     HallOfMeatModel hall_of_meat;
     RoadRashModel road_rash;
     BoardBreakModel board_break;
-    GrindExitModel grind_exit;
     ObjectPersistenceModel object_persistence;
     ParkEditorModel editor;
     float menu_scale = default_menu_scale;
@@ -393,13 +373,6 @@ void set_map_vote_icons(const std::vector<MapVoteIcon>& icons) noexcept;
 // That vote's popup (map_download_card.cpp), for the runtime, which reads the controller and
 // holds the game's input while it is up: whether it is, moving the pick, voting for the pick
 // (the popup then closes), and closing it without a vote. Any thread.
-// A message the player has to see and say OK to, in the middle of the screen (message_card.cpp):
-// that they were kicked or banned from a server, and why. One at a time: a new one takes the
-// place of one still up. For the runtime, which reads the controller and holds the game's input
-// while it is up, as for the vote below: whether it is, and closing it. Any thread.
-void show_message(std::string title, std::string text) noexcept;
-bool message_asking() noexcept;
-void message_dismiss() noexcept;
 bool map_vote_asking() noexcept;
 void map_vote_move(int by) noexcept;
 void map_vote_take() noexcept;
@@ -463,13 +436,12 @@ void set_skate_hud_feed(SkateHudFeed) noexcept;
 struct NametagBubble {
     std::string text, raw;
     float appear{1}, fade{1};
-    bool hint{}; // grey typing discs, not a chat line. text is ".", "..", or "..." for 1, 2, or 3 discs
 };
 struct Nametag {
     std::array<float, 3> position{}; // above the skater's head, world space
     std::string name;
     std::uint32_t color{0xffffffffU}; // R, G, B, A bytes (IM_COL32)
-    std::string tag;                  // role badge before the name ("Dev", "ReSkate Admin", "Content Creator", "Centrix", "Homie", "Admin", "Host", "Friend")
+    std::string tag;                  // role badge before the name ("Dev", "Staff", "Content Creator", "Centrix", "Homie", "Admin", "Host", "Friend")
     float distance{};                 // metres from the local skater
     bool talking{};
     // Recent chat lines to show as bubbles above the head, oldest first ("" = none).
@@ -584,8 +556,6 @@ extern "C" unsigned DingoSDKOverlayReadPromptKeys();
 // allow_menu is used only by the Binds page while recording. Focus and lifetime
 // gates still apply. Gameplay callers leave it false.
 extern "C" void DingoSDKOverlayReadControllerInput(dingosdk::ControllerInput* input, bool allow_menu = false);
-// Installs (or, with nullptr, removes) the one gamepad filter. Any thread.
-extern "C" void DingoSDKOverlaySetGamepadFilter(dingosdk::overlay::GamepadFilter filter);
 
 // Optional direct integration for a host that already knows its exact pair.
 struct IDXGISwapChain;

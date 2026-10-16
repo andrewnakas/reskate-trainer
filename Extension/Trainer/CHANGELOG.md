@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.7.2 - 2026-10-15
+
+**For ReSkate 2.0.7**, the latest ReSkate release on GitHub: everything in 0.7.1, built on 2.0.7 instead of 2.0.9.
+0.7.0 and 0.7.1 were built on ReSkate 2.0.9, which exists only as a tag in ReSkate's repository, not as a release.
+Install it the 0.6.0 way, in the Mods folder of your ReSkate install. Not in this build: what ReSkate 2.0.8 and 2.0.9
+added themselves (grind exit triggers, mod profiles, timed kicks, Music screen fixes; ReSkate's own folder).
+
 ## v0.7.1 - 2026-10-15
 
 Built on ReSkate 2.0.9, like 0.7.0.

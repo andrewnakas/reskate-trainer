@@ -24,9 +24,6 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool gameplay_ready, std::
           MapLoader loader = nullptr);
 MultiplayerModel model();
 std::string take_leave_notice(); // why the session just ended over a missing map, once; client thread
-// What the host or server said as it put the player out of the session (kicked, banned, away too
-// long, a mod or a cheat it does not allow), or refused to let them in for it; once. Client thread.
-std::string take_removed_notice();
 // The same map when the host said which Thunderstore package it is from, so it can be offered
 // for download instead (Extension/Assets/map_download.h): the session does not end. It tells
 // the host the map is being fetched, which is given much longer than a load, and goes on
@@ -46,11 +43,6 @@ struct MapNeed {
 std::optional<MapNeed> take_map_need();
 // Whether a session is waiting on a map being fetched right now. Thread-safe.
 bool fetching_map() noexcept;
-// Held while a map is being downloaded, installed or applied: the session does not load the
-// host's map meanwhile, and waits as it does for one that is missing. A map that is being
-// replaced by another version is one the game already knows, so without this it would load as
-// soon as the new files are in place, before the mods are applied again. Thread-safe.
-void hold_map_load(bool hold) noexcept;
 // How a host learns the package of the map it is on, to tell its guests: the level's asset in,
 // the package (or nothing) out. Called on the client thread, often; it should be quick.
 using MapPackageLookup = std::string (*)(std::string_view asset);

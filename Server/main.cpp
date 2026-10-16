@@ -3,7 +3,6 @@
 // the Steam client files (steamclient64.dll, tier0_s64.dll, vstdlib_s64.dll).
 // On Linux the Steam files are libsteam_api.so and steamclient.so.
 #include "global_bans.h"
-#include "server_map_update.h"
 #include "server_config.h"
 #include "server_host.h"
 #include "server_update.h"
@@ -513,7 +512,6 @@ int run(int argc, char **argv, bool skip_update) {
     std::future<BanListCheck> ban_check;
     auto next_ban_check = next_advertise;
     bool bans_unread{};
-    MapUpdater map_updater; // "maps.latest_versions" and "maps update" (server_map_update.h)
     if (!config.global_bans) write_log("Global bans are off (\"use_global_bans\": false): only this server's own bans apply.");
     write_log(host.command("words")); // reads this server's own chat words
     // Signed in to Steam, as last logged, and when it is looked at again. Players already on stay
@@ -584,12 +582,6 @@ int run(int argc, char **argv, bool skip_update) {
                 restart = true;
             }
             update_now = false;
-        }
-        if (const auto maps = map_updater.tick(config.latest_versions, config.latest_check_minutes, config.mods, host.map_folder_in_play(),
-                                               host.take_map_update_request());
-            !maps.lines.empty() || maps.changed) {
-            for (const auto &line : maps.lines) write_log(line);
-            if (maps.changed) write_log(host.reload_maps());
         }
         // (The chat word lists come in the same answer, and hold on every server: it is read
         // for them whether or not the bans are used.)
@@ -706,13 +698,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int cmd_show) {
     }
 
     if (headless) {
-        // A server started with its output piped or in a file (by a manager or a service) keeps
-        // what it was given: reopening CONOUT$ closes it, and then nothing the server writes, or
-        // is sent, gets through. Started by hand, it takes its parent's console or one of its own.
-        const HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
-        const DWORD out_type = out && out != INVALID_HANDLE_VALUE ? GetFileType(out) : FILE_TYPE_UNKNOWN;
-        const bool redirected = out_type == FILE_TYPE_PIPE || out_type == FILE_TYPE_DISK;
-        if (!redirected && (AttachConsole(ATTACH_PARENT_PROCESS) || AllocConsole())) {
+        if (AttachConsole(ATTACH_PARENT_PROCESS) || AllocConsole()) {
             FILE *fp = nullptr;
             freopen_s(&fp, "CONOUT$", "w", stdout);
             freopen_s(&fp, "CONOUT$", "w", stderr);

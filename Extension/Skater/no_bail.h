@@ -193,10 +193,4 @@ struct DarkPopLast {
     unsigned freeze_writes{}, freeze_held{}, freeze_lost{};
 };
 DarkPopLast dark_pop_last() noexcept;
-// Further listeners on the same steps (the grind exit control, grind_exit_control.h),
-// independent of the observer above so none displaces Hall of Meat's. Same thread and timing. Adding one already there, or removing one that is not, does nothing;
-// false when all slots are taken.
-inline constexpr std::size_t no_bail_step_listener_slots = 4;
-bool add_no_bail_step_listener(NoBailStepObserver listener) noexcept;
-void remove_no_bail_step_listener(NoBailStepObserver listener) noexcept;
 }

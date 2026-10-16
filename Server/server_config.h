@@ -42,9 +42,6 @@ struct VoteSettings {
     std::vector<CustomVote> custom;
     unsigned seconds = 30;  // how long a vote runs
     unsigned cooldown = 60; // seconds before the same player may start another
-    // How long a player kicked by a vote is kept out, in minutes; 0: until the server restarts.
-    // (An admin's kick goes by ServerConfig::kick_minutes.)
-    unsigned kick_minutes = 5;
     bool starter_votes_yes = true; // whoever starts a vote has voted yes
     // Polls: questions with up to six answers that run nothing. "off", "admins" or "everyone".
     std::string polls = "admins";
@@ -103,10 +100,6 @@ struct ServerConfig {
     unsigned rotation_extend = 15;       // minutes, 0 to 240
     // Players are told on a card when the map has 10, 5 and 1 minutes left.
     bool rotation_announce = true;
-    // The custom maps in Mods that are Thunderstore packages are kept at Thunderstore's newest
-    // version (server_map_update.h), looked up at start and every so many minutes.
-    bool latest_versions = false;
-    unsigned latest_check_minutes = 60;
     unsigned max_players = 16; // players; the server itself is not one
     // The most poses a second one player is sent (crowd_limits); 0: no limit.
     unsigned crowd_budget = crowd_pose_budget;
@@ -161,9 +154,6 @@ struct ServerConfig {
     // Minutes a player may be away (not moving, talking, typing or building) before the server
     // removes them, 1 to 1440; 0: never. Admins are never removed for it.
     unsigned afk_kick = 0;
-    // Minutes a kicked player (by an admin or by a vote) is kept out, 1 to 1440; 0: until the
-    // server restarts. A kick keeps the time it was given: changing this is for later kicks.
-    unsigned kick_minutes = 0;
     // A chat message with a word the ReSkate team does not allow at all (word_lists.h) is never
     // passed on. Its player is warned; after this many warnings, 1 to 10, the next gets them
     // kicked. 0: nobody is warned or kicked, and the message is still not passed on.

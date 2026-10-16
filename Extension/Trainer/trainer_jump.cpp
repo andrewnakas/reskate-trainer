@@ -41,7 +41,6 @@ struct Hooked {
     bool ollie_known{};
     std::atomic<std::uint32_t> launch_trick{0xff}; // CurrentFlipTrick as the trainer read it last tick
     std::atomic<std::uintptr_t> trick_at{};        // where the game keeps that number (0: not known)
-    std::atomic<TrajectoryModifier> modifier{};
     std::array<std::atomic<float>, 64> flip_launch{}; // least upward launch speed by trick, m/s; 0: the game's own
     // The last few launches, for the trainer's log line: written by the physics thread, read
     // by the client tick.
@@ -113,15 +112,6 @@ void raise_step() noexcept {
 void set_trajectory_hook(std::uintptr_t trajectory, float *parameters) {
     auto &h = hooked();
     const auto caller = reinterpret_cast<std::uintptr_t>(_ReturnAddress()) - h.base;
-    if (const auto modifier = h.modifier.load(std::memory_order_acquire); modifier && parameters) {
-        float velocity[3]{parameters[velocity_y - 1], parameters[velocity_y], parameters[velocity_y + 1]};
-        modifier(caller - 5, trajectory, velocity);
-        if (std::isfinite(velocity[0]) && std::isfinite(velocity[1]) && std::isfinite(velocity[2])) {
-            parameters[velocity_y - 1] = velocity[0];
-            parameters[velocity_y] = velocity[1];
-            parameters[velocity_y + 1] = velocity[2];
-        }
-    }
     const auto trick_then = h.launch_trick.load(std::memory_order_relaxed), trick_live = live_trick(h.trick_at.load(std::memory_order_relaxed));
     if (parameters && (caller == no_comply_call + 5 || caller == boneless_call + 5)) {
         const auto watch = watched_physics_state(); // the local skater's
@@ -394,8 +384,5 @@ bool take_trick_launch(TrickLaunch &out) noexcept {
     std::memcpy(&out.up_speed, &bits[0], 4);
     std::memcpy(&out.factor, &bits[1], 4);
     return true;
-}
-void set_trajectory_modifier(TrajectoryModifier modifier) noexcept {
-    hooked().modifier.store(modifier, std::memory_order_release);
 }
 } // namespace dingosdk::trainer

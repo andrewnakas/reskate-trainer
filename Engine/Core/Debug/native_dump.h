@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <optional>
 
-namespace dingosdk::crash_report {
+namespace dingosdk::backtrace {
 struct NativeDump {
     std::filesystem::path path;
     DWORD process_id{}, process_created{}, thread_id{}, exception_code{}, timestamp{};

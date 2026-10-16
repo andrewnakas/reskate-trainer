@@ -1,10 +1,8 @@
 #include "session_internal.h"
 #include "Extension/Profile/local_profile_runtime.h"
 #include "Extension/Multiplayer/Net/wire_codec.h"
-#include "Engine/Core/Log/logging.h"
 #include "Engine/Game/Build/supported_build.h"
 #include <algorithm>
-#include <format>
 #include <iterator>
 #include <stdexcept>
 #include <utility>
@@ -446,11 +444,6 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
         }
     }
     if (s.mode == Mode::join && physical(s.host_id) == links.end()) {
-        // What the other end said as it closed the link, when it was said to this player
-        // ("You were kicked...", "You are banned...", "Your mods..."), is put in front of
-        // them (take_removed_notice): otherwise it is only the status line of a menu they
-        // may never open. A link that just went away says nothing of the kind.
-        if (const auto said = s.transport.status().detail; said.starts_with("You ") || said.starts_with("Your ")) s.removed_notice = said;
         stop(s, s.transport.status().detail);
         return;
     }
@@ -595,20 +588,6 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
             continue;
         if (!decoded || decoded->session != s.secret ||
             ((s.mode == Mode::host || direct_link) && decoded->source != message.peer)) {
-            // Which of the three it was, and what the message looked like: the status line
-            // says only that one of them failed (2026-10-13: joins to updated servers ended
-            // here with nothing to tell them apart).
-            try {
-                std::string start;
-                for (std::size_t i = 0; i < message.bytes.size() && i < 16; ++i) start += std::format("{:02x}", static_cast<unsigned>(message.bytes[i]));
-                dingosdk::logging::log(dingosdk::logging::Level::warning, dingosdk::logging::Channel::runtime,
-                    "Multiplayer: a message from {} was turned down: {}. {} byte(s), starting {}; {} link{}{}.", message.peer,
-                    !decoded ? std::string("it could not be read")
-                    : decoded->session != s.secret ? std::format("it is of another session (kind {})", static_cast<int>(decoded->kind))
-                    : std::format("it names another sender, {} (kind {})", decoded->source, static_cast<int>(decoded->kind)),
-                    message.bytes.size(), start, direct_link ? "a direct" : "the host's", batch.empty() ? "" : ", one of a batch",
-                    s.mode == Mode::join && dedicated_host(s) ? ", a dedicated server" : "");
-            } catch (...) {}
             disconnect(s, message.peer, "Join code, sender identity, or multiplayer protocol did not match.");
             if (s.mode == Mode::off)
                 return;
@@ -1047,26 +1026,6 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
             }
             if (owes_proof(s, *sender)) relayed_chat(s, *sender, p, now);
             else add_chat(s, sender->member.id, server ? std::string("Server") : chat_name(s, *sender), p.text);
-            if (s.mode == Mode::host) broadcast(s, p, true, false, now, p.source);
-            continue;
-        }
-        // Grey dots above the sender. Not a chat line. "On" is held to a few a second so a
-        // modified client cannot flood the relay, and "off" only clears dots that are up, so
-        // it cannot outpace "on".
-        if (p.kind == PacketKind::typing) {
-            auto *sender = find_peer(s, p.source);
-            if (direct_link || !sender || !sender->handshaken) continue;
-            if (!routed_source(p, sender->member, message.peer, s.mode == Mode::host, s.host_id))
-                continue;
-            if (p.typing) {
-                if (sender->typing_notice && now < sender->typing_notice + 200000) continue;
-                sender->typing_notice = now;
-                sender->typing_until = now + typing_hold_us;
-            } else {
-                if (!sender->typing_until) continue;
-                sender->typing_until = 0;
-            }
-            sender->last_packet = now;
             if (s.mode == Mode::host) broadcast(s, p, true, false, now, p.source);
             continue;
         }

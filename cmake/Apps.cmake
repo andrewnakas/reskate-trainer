@@ -1,9 +1,9 @@
 if(WIN32)
     add_executable(dingosdk_launcher WIN32 Launcher/main.cpp Launcher/launch.cpp
         Launcher/gui.cpp Launcher/gui_launcher.cpp Launcher/gui_renderer.cpp Launcher/gui_home.cpp
-        Launcher/gui_settings.cpp Launcher/gui_sign_in.cpp Launcher/gui_mods.cpp Launcher/gui_mods_browse.cpp Launcher/gui_mods_profiles.cpp
+        Launcher/gui_settings.cpp Launcher/gui_sign_in.cpp Launcher/gui_mods.cpp Launcher/gui_mods_browse.cpp
         Launcher/gui_gamepad.cpp Launcher/gamepad_input.cpp Launcher/gui_changelog.cpp Launcher/game_settings.cpp
-        Launcher/updater.cpp Launcher/mod_manager.cpp Launcher/mod_profiles.cpp Launcher/thunderstore.cpp Launcher/problem.h)
+        Launcher/updater.cpp Launcher/mod_manager.cpp Launcher/thunderstore.cpp Launcher/problem.h)
     target_link_libraries(dingosdk_launcher PRIVATE dingosdk_logging dingosdk_content_cache_install dingosdk_world_layer_scan dingosdk_launcher_support dingosdk_initfs
         dingosdk_mod_list dingosdk_mods dingosdk_json dingosdk_miniz dingosdk_imgui dingosdk_playstation_input winhttp shell32 dwmapi windowscodecs ole32)
     set_target_properties(dingosdk_launcher PROPERTIES OUTPUT_NAME "ReSkateLauncher")
@@ -13,15 +13,6 @@ endif()
 option(DINGOSDK_BUILD_LAUNCHER_TESTS "Build launcher mod manager regression tests" OFF)
 if(DINGOSDK_BUILD_LAUNCHER_TESTS AND WIN32)
     enable_testing()
-    add_library(dingosdk_test_oodle_codec SHARED Engine/Resource/Test/oodle_test_codec.cpp)
-    set_target_properties(dingosdk_test_oodle_codec PROPERTIES
-        OUTPUT_NAME "oo2core_9_win64" PREFIX ""
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/oodle-fixture/$<CONFIG>")
-    add_executable(dingosdk_oodle_path_tests Engine/Resource/Test/oodle_path_tests.cpp)
-    target_link_libraries(dingosdk_oodle_path_tests PRIVATE dingosdk_frostbite)
-    target_include_directories(dingosdk_oodle_path_tests PRIVATE "${PROJECT_SOURCE_DIR}")
-    add_dependencies(dingosdk_oodle_path_tests dingosdk_test_oodle_codec)
-    add_test(NAME oodle_path COMMAND dingosdk_oodle_path_tests "$<TARGET_FILE_DIR:dingosdk_test_oodle_codec>")
     add_executable(dingosdk_mod_manager_tests Launcher/Test/mod_manager_tests.cpp Launcher/mod_manager.cpp)
     target_link_libraries(dingosdk_mod_manager_tests PRIVATE dingosdk_mod_list dingosdk_launcher_support dingosdk_miniz shell32)
     add_test(NAME launcher_mod_manager COMMAND dingosdk_mod_manager_tests)
@@ -29,10 +20,6 @@ if(DINGOSDK_BUILD_LAUNCHER_TESTS AND WIN32)
     target_link_libraries(dingosdk_thunderstore_tests PRIVATE dingosdk_json dingosdk_miniz)
     target_include_directories(dingosdk_thunderstore_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME launcher_thunderstore COMMAND dingosdk_thunderstore_tests)
-    add_executable(dingosdk_mod_profiles_tests Launcher/Test/mod_profiles_tests.cpp Launcher/mod_profiles.cpp)
-    target_link_libraries(dingosdk_mod_profiles_tests PRIVATE dingosdk_mod_list dingosdk_json dingosdk_miniz)
-    target_include_directories(dingosdk_mod_profiles_tests PRIVATE "${PROJECT_SOURCE_DIR}")
-    add_test(NAME launcher_mod_profiles COMMAND dingosdk_mod_profiles_tests "${CMAKE_CURRENT_BINARY_DIR}/mod-profiles-fixture")
     add_executable(dingosdk_thunderstore_package_tests Engine/Vfs/Test/thunderstore_package_tests.cpp Engine/Vfs/thunderstore_package.cpp)
     target_link_libraries(dingosdk_thunderstore_package_tests PRIVATE dingosdk_json)
     target_include_directories(dingosdk_thunderstore_package_tests PRIVATE "${PROJECT_SOURCE_DIR}")
@@ -193,7 +180,6 @@ if(WIN32)
         Server/server_engine.cpp Server/server_host.cpp Server/server_party.cpp
         Extension/Multiplayer/Session/party_book.cpp Server/server_config.cpp Server/steam_server.cpp
         Server/server_update.cpp Server/server_release.cpp Launcher/updater.cpp
-        Server/server_map_update.cpp Engine/Vfs/thunderstore_package.cpp
         Server/global_bans.cpp Server/server_words.cpp Extension/Multiplayer/developer_identity.cpp Extension/Multiplayer/word_lists.cpp
         Extension/Multiplayer/Steam/steam_transport.cpp Extension/Multiplayer/Net/protocol.cpp
         Extension/Multiplayer/Net/delta_codec.cpp Extension/Multiplayer/Net/wire_codec.cpp
@@ -210,7 +196,7 @@ else()
     find_package(OpenSSL REQUIRED)
     add_executable(dingosdk_server Server/main.cpp Server/server_engine.cpp Server/server_host.cpp Server/server_party.cpp
         Extension/Multiplayer/Session/party_book.cpp Server/server_config.cpp Server/steam_server.cpp
-        Server/server_update.cpp Server/server_release.cpp Server/server_map_update.cpp Engine/Vfs/thunderstore_package.cpp
+        Server/server_update.cpp Server/server_release.cpp
         Server/global_bans.cpp Server/server_words.cpp Extension/Multiplayer/developer_identity.cpp Extension/Multiplayer/word_lists.cpp
         Extension/Multiplayer/Steam/steam_transport.cpp Extension/Multiplayer/Net/protocol.cpp
         Extension/Multiplayer/Net/delta_codec.cpp Extension/Multiplayer/Net/wire_codec.cpp

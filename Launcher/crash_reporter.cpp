@@ -6,7 +6,7 @@
 #include "Engine/Core/Debug/native_dump.h"
 #include "Engine/Core/Debug/multipart.h"
 #include "Engine/Game/Build/supported_build.h"
-#include "crash_report_config.h"
+#include "backtrace_config.h"
 #include "reskate_version.h"
 #include <cstdlib>
 #include <fstream>
@@ -15,7 +15,7 @@
 
 namespace {
 using namespace dingosdk;
-using namespace dingosdk::crash_report;
+using namespace dingosdk::backtrace;
 std::string utf8(const wchar_t* text) {
     const auto size = WideCharToMultiByte(CP_UTF8, 0, text, -1, nullptr, 0, nullptr, nullptr);
     if (size <= 1) return {};
@@ -128,7 +128,7 @@ int run(int argc, wchar_t** argv) {
     return saved ? 0 : 4;
 }
 }
-int dingosdk::crash_report::run_reporter(int argc, wchar_t** argv) noexcept {
+int dingosdk::backtrace::run_reporter(int argc, wchar_t** argv) noexcept {
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
     try { return run(argc, argv); } catch (...) { return 1; }
 }

@@ -47,8 +47,6 @@ void register_multiplayer_commands(Commands &registry) {
                           Command{"chat-bubbles-history", "How many recent messages stack above a skater (1-8)"},
                           Command{"score-check", "Host: keep players whose mods change scoring or physics out of throwdowns and "
                                                  "coop challenges (on, off, toggle; on by default)"},
-                          Command{"objects-solid", "Make a player's placed objects solid for you, or ghosts you pass through: "
-                                                   "<SteamID64, or server for a dedicated server's own> on|off"},
                           Command{"retry", "Retry remote skater creation after an error"},
                           Command{"test", "Test a Steam socket-pair round trip"},
                           Command{"status", "Show multiplayer connection and animation status"}}) {
@@ -77,8 +75,7 @@ void register_multiplayer_commands(Commands &registry) {
         if (std::string_view(c.name) == "chat-bubbles-history")
             args.push_back(argument("lines"));
         if (std::string_view(c.name) == "chat" || std::string_view(c.name) == "server" || std::string_view(c.name) == "party" ||
-            std::string_view(c.name) == "tp" || std::string_view(c.name) == "tphere" ||
-            std::string_view(c.name) == "objects-solid") {
+            std::string_view(c.name) == "tp" || std::string_view(c.name) == "tphere") {
             auto message = argument("message");
             message.rest = true;
             args.push_back(std::move(message));

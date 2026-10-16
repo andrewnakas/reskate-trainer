@@ -29,7 +29,6 @@ void apply_host_park_choices(const ParkChoices& choices) {
 std::optional<NetworkObjectSnapshot> capture_local_network_objects() { return {}; }
 void set_remote_network_objects(std::string_view, std::span<const NetworkObjectOwner>) {}
 void clear_remote_network_objects() {}
-void set_network_object_owner_solid(std::uint64_t, bool) {}
 std::vector<std::pair<std::uint64_t, std::uint64_t>> removed_object_owners;
 void remove_remote_network_objects(std::uint64_t owner, std::uint64_t epoch) {
     if (owner && epoch) removed_object_owners.emplace_back(owner, epoch);
@@ -291,7 +290,6 @@ std::uintptr_t remote_board_entity() noexcept { return 0; }
 std::uint64_t remote_skater_generation() noexcept { return 0; }
 void note_remote_distance(float) noexcept {}
 void update_native_party(std::uintptr_t, const PartyRoster &, unsigned, bool) noexcept {}
-void set_native_party_server(std::uint64_t, std::string_view) noexcept {}
 void set_native_party_changes(bool) noexcept {}
 bool post_native_party_invite(std::uint64_t) noexcept { return false; }
 void set_native_nametags_enabled(bool) noexcept {}
@@ -2270,52 +2268,6 @@ void random_park_sync_checks() {
     simulated_parks = {};
     std::cout << "Random parks: host rolls, current guests, late join and guest spoof rejection passed.\n";
 }
-// Typing dots: the host relays an on notice, an off notice clears it, and a missed off expires.
-void typing_checks() {
-    Simulation sim;
-    for (unsigned i = 0; i < 3; ++i) sim.add();
-    sim.run(60); sim.fresh(3);
-    auto &host = *sim.nodes[0], &first = *sim.nodes[1], &second = *sim.nodes[2];
-    const auto id = [](const Session &s) { return s.transport.status().local_id; };
-    const auto until = [](Session &s, std::uint64_t who) {
-        const auto *peer = find_peer(s, who);
-        return peer ? peer->typing_until : 0;
-    };
-    send_typing(first, true);
-    sim.run(4);
-    check(until(host, id(first)) > sim.now && until(second, id(first)) > sim.now && first.local_typing_until != 0,
-          "A guest's typing notice did not reach the host and the other guest");
-    check(until(first, id(host)) == 0 && second.local_typing_until == 0, "A typing notice was applied to the wrong player");
-    check(std::none_of(host.chat.begin(), host.chat.end(), [](const auto &line) { return line.text == "." || line.text == "..."; }) &&
-              std::none_of(second.chat.begin(), second.chat.end(), [](const auto &line) { return line.text == "." || line.text == "..."; }),
-          "A typing notice was written into chat");
-    send_typing(first, false);
-    sim.run(4);
-    check(until(host, id(first)) == 0 && until(second, id(first)) == 0 && first.local_typing_until == 0,
-          "Stopping typing left the dots up");
-    // A stop with no dots up is not passed on: the other guest would lose this marker if it were.
-    find_peer(second, id(first))->typing_until = sim.now + typing_hold_us;
-    send_typing(first, false);
-    sim.run(4);
-    check(until(second, id(first)) != 0, "A stop notice with no dots up was relayed");
-    find_peer(second, id(first))->typing_until = 0;
-    send_typing(host, true);
-    sim.run(4);
-    check(until(first, id(host)) > sim.now && until(second, id(host)) > sim.now && host.local_typing_until != 0,
-          "The host's typing notice did not reach both guests");
-    send_typing(host, false);
-    sim.run(2);
-    check(until(first, id(host)) == 0 && until(second, id(host)) == 0 && host.local_typing_until == 0,
-          "The host stopping left the dots up");
-    send_typing(first, true);
-    sim.run(4);
-    const auto held = until(second, id(first));
-    check(held > sim.now, "Typing did not start again");
-    sim.run(static_cast<unsigned>(typing_hold_us / network_tick_us) + 8);
-    check(until(second, id(first)) < sim.now && until(host, id(first)) < sim.now && until(second, id(first)) != 0,
-          "A missed stop notice left the dots up, or cleared the deadline");
-    std::cout << "Typing notices: relay, stop and expiry passed.\n";
-}
 } // namespace
 } // namespace dingosdk::multiplayer
 int main(int argc, char **argv) {
@@ -2366,7 +2318,6 @@ int main(int argc, char **argv) {
         if (argc == 2 && std::string_view(argv[1]) == "--travel-only") return 0;
         dingosdk::multiplayer::mesh_checks();
         dingosdk::multiplayer::throwdown_routing_checks();
-        dingosdk::multiplayer::typing_checks();
         dingosdk::multiplayer::party_checks();
         dingosdk::multiplayer::role_checks();
         dingosdk::multiplayer::global_ban_checks();

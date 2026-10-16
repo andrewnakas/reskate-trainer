@@ -46,12 +46,6 @@ class Host {
 
     std::string invite() const;
     std::string map_name() const;
-    // "maps reload": reads Mods again and says what changed. Also after a map was updated.
-    std::string reload_maps();
-    // The mod folder of the map in play while anyone is on (an update leaves it alone), or
-    // nothing; and whether "maps update" was typed since this was last asked.
-    std::string map_folder_in_play() const;
-    bool take_map_update_request() { return std::exchange(map_update_requested_, false); }
     unsigned players() const;
     std::uint64_t secret() const { return secret_; }
     // The UDP port players may connect straight to, or 0 (config connection).
@@ -188,8 +182,6 @@ class Host {
         std::vector<Packet> relay_poses;
         unsigned effects_pass{};
         ChatRate chat_rate;
-        std::uint64_t typing_notice{}; // last accepted "still typing", so a flood is not relayed
-        bool typing{};                 // an "on" was passed along and no "off" since
         ChatBudget admin_budget, throwdown_budget, party_budget;
         SpeedCheck speed;           // how fast their game runs, from their pose timestamps
         bool speeding{};            // flagged: out of linked activities (config speed_check)
@@ -232,7 +224,6 @@ class Host {
     ServerConfig &config_;
     SteamTransport &transport_;
     Log log_;
-    bool map_update_requested_{};
     ActivityLog activity_; // what players do, for the console (config_.activity_log)
     // The running player vote (server_votes.cpp), and when each player may start another.
     // A poll is one too: it has answers instead of yes and no, and runs nothing (but the console's poll-run).
@@ -287,12 +278,7 @@ class Host {
     PartyBook parties_;
     std::uint64_t party_revision_{};
     std::map<std::uint64_t, std::unique_ptr<Guest>> guests_;
-    // Kicked players and when each may join again (0: not before the server restarts).
-    std::map<std::uint64_t, std::uint64_t> kicked_;
-    // Keeps a player out for `minutes` (0: until the server restarts), or for as long as
-    // kick_minutes says when none is given, and says how long for their notice and the log:
-    // " for 10 minutes", or " until the server restarts".
-    std::string keep_out(std::uint64_t id, std::optional<unsigned> minutes = std::nullopt);
+    std::set<std::uint64_t> kicked_;
     // The name each player last joined under, for banning one who has left by their SteamID.
     std::map<std::uint64_t, std::string> seen_names_;
     // Warnings each player has had for words that are not allowed at all ("word_warnings"),

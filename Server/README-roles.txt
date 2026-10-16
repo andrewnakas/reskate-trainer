@@ -44,9 +44,8 @@ A role
 name          1 to 24 characters: a-z, 0-9, - and _. Lower case. Not "none".
 tag           The word shown before the player's name in chat and on their
               nametag. Up to 16 characters, "" for no tag. It cannot be a tag
-              the game uses itself: Server, ReSkate, ReSkate Admin, Host,
-              Friend, Dev, Developer, Staff, Homie, Centrix, Content Creator.
-              A word the
+              the game uses itself: Server, ReSkate, Host, Friend, Dev,
+              Developer, Staff, Homie, Centrix, Content Creator. A word the
               ReSkate team does not allow in chat is not shown as a tag either.
 color         The tag's colour, "#RRGGBB".
 rank          0 to 1000. See Rank below.
@@ -115,9 +114,7 @@ Any role with at least one command can also use help and roles (the list).
 
 Players
   players              Connected players and their SteamID64s.
-  kick                 kick <player> [minutes|restart]: off the server for
-                       that long, or for as long as kick-time says.
-  kick-time            kick-time <minutes>|restart: how long a kick lasts.
+  kick                 kick <player>: off the server until it restarts.
   ban                  ban <player or SteamID64> [name]: for good.
   unban                unban <SteamID64>.
   bans                 The ban list. (A role with ban, unban or bans also sees
